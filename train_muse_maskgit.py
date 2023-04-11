@@ -230,6 +230,12 @@ def parse_args():
         help="Number of steps for the warmup in the lr scheduler.",
     )
     parser.add_argument(
+        "--num_cycles",
+        type=int,
+        default=1,
+        help="The number of hard restarts used in COSINE_WITH_RESTARTS scheduler.",
+    )
+    parser.add_argument(
         "--resume_path",
         type=str,
         default=None,
@@ -399,6 +405,7 @@ def main():
         lr=args.lr,
         lr_scheduler_type=args.lr_scheduler,
         lr_warmup_steps=args.lr_warmup_steps,
+        num_cycles=args.num_cycles,
         max_grad_norm=args.max_grad_norm,
         save_results_every=args.save_results_every,
         save_model_every=args.save_model_every,

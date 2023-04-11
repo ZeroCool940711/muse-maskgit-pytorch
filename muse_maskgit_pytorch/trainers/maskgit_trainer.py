@@ -45,6 +45,7 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
         lr=3e-4,
         lr_scheduler_type="constant",
         lr_warmup_steps=500,
+        num_cycles=1,
         use_ema=True,
         ema_beta=0.995,
         ema_update_after_step=0,
@@ -101,6 +102,7 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
             optimizer=self.optim,
             num_warmup_steps=lr_warmup_steps * self.gradient_accumulation_steps,
             num_training_steps=self.num_train_steps * self.gradient_accumulation_steps,
+            num_cycles=num_cycles,
         )
 
         # prepare with accelerator
