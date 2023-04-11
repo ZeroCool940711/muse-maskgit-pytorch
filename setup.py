@@ -39,6 +39,7 @@ setup(
         'lion-pytorch',
         'loguru',
         'torch_optimizer',
+        'dadaptation',
     ],
     classifiers=[
         'Development Status :: 4 - Beta',

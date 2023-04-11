@@ -21,6 +21,7 @@ from torch_optimizer import AdaBound, AdaMod, AccSGD, AdamP, AggMo, DiffGrad, \
      Lamb, NovoGrad, PID, QHAdam, QHM, RAdam, SGDP, SGDW, Shampoo, SWATS, Yogi
 from transformers.optimization import Adafactor
 from lion_pytorch import Lion
+from dadaptation import DAdaptAdaGrad, DAdaptAdam, DAdaptSGD
 
 import numpy as np
 
@@ -114,6 +115,18 @@ def get_optimizer(use_8bit_adam, optimizer, parameters, lr, weight_decay):
             optim = bnb.optim.AdamW8bit(parameters, lr=lr, weight_decay=weight_decay)
         else:
             optim = AdamW(parameters, lr=lr, weight_decay=weight_decay)
+    elif optimizer == "DAdaptAdam":
+        optim = DAdaptAdam(parameters, lr=lr, weight_decay=weight_decay)
+        if use_8bit_adam:
+            print("8bit is not supported by the DAdaptAdam optimiser, Using standard DAdaptAdam instead.")
+    elif optimizer == "DAdaptAdaGrad":
+        optim = DAdaptAdaGrad(parameters, lr=lr, weight_decay=weight_decay)
+        if use_8bit_adam:
+            print("8bit is not supported by the DAdaptAdaGrad optimiser, Using standard DAdaptAdaGrad instead.")
+    elif optimizer == "DAdaptSGD":
+        optim = DAdaptSGD(parameters, lr=lr, weight_decay=weight_decay)
+        if use_8bit_adam:
+            print("8bit is not supported by the DAdaptSGD optimiser, Using standard DAdaptSGD instead.")
 
     elif optimizer == "Lion":
         optim = Lion(parameters, lr=lr, weight_decay=weight_decay)
