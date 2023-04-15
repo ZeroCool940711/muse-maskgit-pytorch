@@ -131,12 +131,25 @@ def get_dataset_from_dataroot(
         data_root = os.path.realpath(data_root)
 
     if os.path.exists(save_path):
-        # if the data_root folder is newer than the save_path we reload the
-        if os.stat(save_path).st_mtime - os.stat(data_root).st_mtime > 1:
-            return load_from_disk(save_path)
-        else:
-            print ("The data_root folder has being updated recently. Removing previously saved dataset and updating it.")
+        # Get the modified time of save_path
+        save_path_mtime = os.stat(save_path).st_mtime
+
+        # Traverse the directory tree of data_root and get the modified time of all files and subdirectories
+        print("Checking modified date of all the files and subdirectories in the dataset folder.")
+        data_root_mtime = max(
+            os.stat(os.path.join(root, f)).st_mtime
+            for root, dirs, files in os.walk(data_root)
+            for f in files + dirs
+        )
+
+        # Check if data_root is newer than save_path
+        if data_root_mtime > save_path_mtime:
+            print("The data_root folder has being updated recently. Removing previously saved dataset and updating it.")
             shutil.rmtree(save_path, ignore_errors=True)
+        else:
+            print("The dataset is up-to-date. Loading...")
+            # Load the dataset from save_path if it is up-to-date
+            return load_from_disk(save_path)
 
     extensions = ["jpg", "jpeg", "png", "webp"]
     image_paths = []
@@ -166,7 +179,6 @@ def get_dataset_from_dataroot(
         save_dataset_with_progress(dataset, save_path)
 
     return dataset
-
 
 def split_dataset_into_dataloaders(dataset, valid_frac=0.05, seed=42, batch_size=1):
     if valid_frac > 0:
