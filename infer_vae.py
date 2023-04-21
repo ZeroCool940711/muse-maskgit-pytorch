@@ -302,74 +302,39 @@ def main():
         output_dir = os.path.join(args.results_dir, "outputs", os.path.basename(args.input_folder))
         os.makedirs(output_dir, exist_ok=True)
         for i in tqdm(range(len(dataset))):
-            # Get single image tensor from batch
-            input_image = dataset[i]
-            input_image = input_image.unsqueeze(0)  # add a batch dimension
 
-            # Set starting chunk size and overlap size
-            chunk_size = args.chunk_size
-            overlap_size = args.overlap_size
+            save_image(dataset[i], f"{output_dir}/input.png")
 
-            # Try encoding and decoding with increasing smaller chunk and overlap sizes until success
-            while True:
-                try:
-                    _, ids, _ = vae.encode(input_image.to(accelerator.device if args.gpu == 0 else f"cuda:{args.gpu}"))
-                    recon = vae.decode_from_ids(ids)
-                    break  # If we made it this far, we didn't run out of memory
-                except RuntimeError as e:
-                    if "out of memory" in str(e):
-                        # Try again with smaller chunk and overlap sizes
-                        print("Out of memory error encountered. Trying with smaller chunk and overlap sizes.")
-                        chunk_size //= 2
-                        overlap_size //= 2
-
-                        # Keep dividing chunk and overlap sizes until success or we reach minimum size
-                        while chunk_size >= args.min_chunk_size and overlap_size >= args.min_overlap_size:
-                            try:
-                                _, ids, _ = vae.encode(input_image.to(accelerator.device if args.gpu == 0 else f"cuda:{args.gpu}"))
-                                recon = vae.decode_from_ids(ids)
-                                break  # If we made it this far, we didn't run out of memory
-                            except RuntimeError as e:
-                                if "out of memory" in str(e):
-                                    # Try again with smaller chunk and overlap sizes
-                                    print("Out of memory error encountered. Trying with smaller chunk and overlap sizes.")
-                                    chunk_size //= 2
-                                    overlap_size //= 2
-                                else:
-                                    # Some other kind of RuntimeError occurred, so re-raise it
-                                    raise e
-
-                        # If we've reached minimum size, raise a RuntimeError
-                        if chunk_size < args.min_chunk_size or overlap_size < args.min_overlap_size:
-                            print ("Out of memory even with the smallest chunk and overlap sizes.")
-                            print (f"Skipping image.")
-                            pass
-                    else:
-                        # Some other kind of RuntimeError occurred, so re-raise it
-                        raise e
-
-            # Convert input_image and recon to PIL images
-            input_image = F.to_pil_image(input_image.squeeze(0).cpu(), mode="RGB")
-            recon = F.to_pil_image(recon.squeeze(0).cpu(), mode="RGB")
-
-            # Convert color space of recon to match that of input_image
-            #recon = recon.convert(input_image.mode)
-
-            # Combine input_image and recon into a grid
-            grid_image = PIL.Image.new('RGB', (input_image.width * 2, input_image.height))
-            grid_image.paste(input_image, (0, 0))
-            grid_image.paste(recon, (input_image.width, 0))
-
-
-            # Save grid
-            now = datetime.now().strftime("%m-%d-%Y_%H-%M-%S")
-            hash = hashlib.sha1(input_image.tobytes()).hexdigest()
             try:
-                filename = f"{hash}_{now}.{str(args.input_image).split('.')[-1]}"
-                grid_image.save(os.path.join(output_dir, filename))
-            except ValueError:
+                _, ids, _ = vae.encode(dataset[i][None].to(accelerator.device if args.gpu == 0 else f"cuda:{args.gpu}"))
+                recon = vae.decode_from_ids(ids)
+                save_image(recon, f"{output_dir}/output.png")
+
+                # Load input and output images
+                input_image = PIL.Image.open(f"{output_dir}/input.png")
+                output_image = PIL.Image.open(f"{output_dir}/output.png")
+
+                # Create horizontal grid with input and output images
+                grid_image = PIL.Image.new('RGB', (input_image.width + output_image.width, input_image.height))
+                grid_image.paste(input_image, (0, 0))
+                grid_image.paste(output_image, (input_image.width, 0))
+
+                # Save grid
+                now = datetime.now().strftime("%m-%d-%Y_%H-%M-%S")
+                hash = hashlib.sha1(input_image.tobytes()).hexdigest()
+
                 filename = f"{hash}_{now}.png"
-                grid_image.save(os.path.join(output_dir, filename))
+                grid_image.save(f"{output_dir}/{filename}")
+
+                # Remove input and output images after the grid was made.
+                os.remove(f"{output_dir}/input.png")
+                os.remove(f"{output_dir}/output.png")
+            except RuntimeError as e:
+                if "out of memory" in str(e):
+                    print ("\nOut of Memory. Skipping image")
+                    pass
+
+
 
 if __name__ == "__main__":
     main()
