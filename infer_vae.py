@@ -248,9 +248,6 @@ def main():
 
         dataset = Dataset.from_dict({"image": filepaths}).cast_column("image", Image())
 
-
-
-
     if args.vae_path and args.taming_model_path:
         raise Exception("You can't pass vae_path and taming args at the same time.")
 
@@ -295,6 +292,17 @@ def main():
         _, ids, _ = vae.encode(dataset[image_id][None].to(accelerator.device if args.gpu == 0 else f"cuda:{args.gpu}"))
         recon = vae.decode_from_ids(ids)
         save_image(recon, f"{args.results_dir}/outputs/output.{str(args.input_image).split('.')[-1]}")
+
+    if not args.input_image and not args.input_folder:
+        image_id = 0 if not args.random_image else random.randint(0, len(dataset))
+
+        os.makedirs(f"{args.results_dir}/outputs", exist_ok=True)
+
+        save_image(dataset[image_id], f"{args.results_dir}/outputs/input.png")
+
+        _, ids, _ = vae.encode(dataset[image_id][None].to(accelerator.device if args.gpu == 0 else f"cuda:{args.gpu}"))
+        recon = vae.decode_from_ids(ids)
+        save_image(recon, f"{args.results_dir}/outputs/output.png")
 
 
     if args.input_folder:
