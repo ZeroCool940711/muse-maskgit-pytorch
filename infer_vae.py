@@ -1,6 +1,5 @@
 import torch
 from torchvision.utils import save_image
-import torchvision.transforms.functional as F
 from datasets import load_dataset, Dataset, Image
 import os, random, hashlib
 from datetime import datetime
@@ -309,38 +308,59 @@ def main():
         # Create output directory and save input images and reconstructions as grids
         output_dir = os.path.join(args.results_dir, "outputs", os.path.basename(args.input_folder))
         os.makedirs(output_dir, exist_ok=True)
+
+        max_retries = 30
+
         for i in tqdm(range(len(dataset))):
+            retries = 0
+            while True:
+                try:
+                    save_image(dataset[i], f"{output_dir}/input.png")
 
-            save_image(dataset[i], f"{output_dir}/input.png")
+                    _, ids, _ = vae.encode(dataset[i][None].to(accelerator.device if args.gpu == 0 else f"cuda:{args.gpu}"))
+                    recon = vae.decode_from_ids(ids)
+                    save_image(recon, f"{output_dir}/output.png")
 
-            try:
-                _, ids, _ = vae.encode(dataset[i][None].to(accelerator.device if args.gpu == 0 else f"cuda:{args.gpu}"))
-                recon = vae.decode_from_ids(ids)
-                save_image(recon, f"{output_dir}/output.png")
+                    # Load input and output images
+                    input_image = PIL.Image.open(f"{output_dir}/input.png")
+                    output_image = PIL.Image.open(f"{output_dir}/output.png")
 
-                # Load input and output images
-                input_image = PIL.Image.open(f"{output_dir}/input.png")
-                output_image = PIL.Image.open(f"{output_dir}/output.png")
+                    # Create horizontal grid with input and output images
+                    grid_image = PIL.Image.new('RGB', (input_image.width + output_image.width, input_image.height))
+                    grid_image.paste(input_image, (0, 0))
+                    grid_image.paste(output_image, (input_image.width, 0))
 
-                # Create horizontal grid with input and output images
-                grid_image = PIL.Image.new('RGB', (input_image.width + output_image.width, input_image.height))
-                grid_image.paste(input_image, (0, 0))
-                grid_image.paste(output_image, (input_image.width, 0))
+                    # Save grid
+                    now = datetime.now().strftime("%m-%d-%Y_%H-%M-%S")
+                    hash = hashlib.sha1(input_image.tobytes()).hexdigest()
 
-                # Save grid
-                now = datetime.now().strftime("%m-%d-%Y_%H-%M-%S")
-                hash = hashlib.sha1(input_image.tobytes()).hexdigest()
+                    filename = f"{hash}_{now}.png"
+                    grid_image.save(f"{output_dir}/{filename}")
 
-                filename = f"{hash}_{now}.png"
-                grid_image.save(f"{output_dir}/{filename}")
+                    # Remove input and output images after the grid was made.
+                    os.remove(f"{output_dir}/input.png")
+                    os.remove(f"{output_dir}/output.png")
 
-                # Remove input and output images after the grid was made.
-                os.remove(f"{output_dir}/input.png")
-                os.remove(f"{output_dir}/output.png")
-            except RuntimeError as e:
-                if "out of memory" in str(e):
-                    print ("\nOut of Memory. Skipping image")
-                    pass
+                    del _
+                    del ids
+                    del recon
+
+                    torch.cuda.empty_cache()
+                    torch.cuda.ipc_collect()
+
+                    break  # Exit the retry loop if there were no errors
+
+                except RuntimeError as e:
+                    if "out of memory" in str(e) and retries < max_retries:
+                        retries += 1
+                        #print(f"Out of Memory. Retry #{retries}")
+                        torch.cuda.empty_cache()
+                        torch.cuda.ipc_collect()
+                        continue  # Retry the loop
+
+                    else:
+                        print(f"Skipping image {i} after {retries} retries due to out of memory error")
+                        break  # Exit the retry loop after too many retries
 
 
 
