@@ -11,8 +11,10 @@ from torch.utils.data import Dataset, DataLoader, random_split
 import os, time, sys
 from tqdm import tqdm
 from threading import Thread
+import PIL
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
+PIL.Image.MAX_IMAGE_PIXELS = None
 
 
 class ImageDataset(Dataset):
