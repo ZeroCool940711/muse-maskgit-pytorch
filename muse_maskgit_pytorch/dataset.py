@@ -60,6 +60,7 @@ class ImageTextDataset(ImageDataset):
         flip=True,
         center_crop=True,
         using_taming=False,
+        random_crop=False,
     ):
         super().__init__(
             dataset,
@@ -68,6 +69,7 @@ class ImageTextDataset(ImageDataset):
             flip=flip,
             center_crop=center_crop,
             using_taming=using_taming,
+            random_crop=random_crop,
         )
         self.caption_column = caption_column
         self.tokenizer = tokenizer
@@ -138,22 +140,23 @@ def get_dataset_from_dataroot(
         # Get the modified time of save_path
         save_path_mtime = os.stat(save_path).st_mtime
 
-        # Traverse the directory tree of data_root and get the modified time of all files and subdirectories
-        print("Checking modified date of all the files and subdirectories in the dataset folder.")
-        data_root_mtime = max(
-            os.stat(os.path.join(root, f)).st_mtime
-            for root, dirs, files in os.walk(data_root)
-            for f in files + dirs
-        )
+        if not no_cache:
+            # Traverse the directory tree of data_root and get the modified time of all files and subdirectories
+            print("Checking modified date of all the files and subdirectories in the dataset folder.")
+            data_root_mtime = max(
+                os.stat(os.path.join(root, f)).st_mtime
+                for root, dirs, files in os.walk(data_root)
+                for f in files + dirs
+            )
 
-        # Check if data_root is newer than save_path
-        if data_root_mtime > save_path_mtime:
-            print("The data_root folder has being updated recently. Removing previously saved dataset and updating it.")
-            shutil.rmtree(save_path, ignore_errors=True)
-        else:
-            print("The dataset is up-to-date. Loading...")
-            # Load the dataset from save_path if it is up-to-date
-            return load_from_disk(save_path)
+            # Check if data_root is newer than save_path
+            if data_root_mtime > save_path_mtime:
+                print("The data_root folder has being updated recently. Removing previously saved dataset and updating it.")
+                shutil.rmtree(save_path, ignore_errors=True)
+            else:
+                print("The dataset is up-to-date. Loading...")
+                # Load the dataset from save_path if it is up-to-date
+                return load_from_disk(save_path)
 
     extensions = ["jpg", "jpeg", "png", "webp"]
     image_paths = []
@@ -178,8 +181,8 @@ def get_dataset_from_dataroot(
         data_dict[caption_column].append(captions)
     dataset = datasets.Dataset.from_dict(data_dict)
     dataset = dataset.cast_column(image_column, Image())
+
     if not no_cache:
-        # dataset.save_to_disk(save_path)
         save_dataset_with_progress(dataset, save_path)
 
     return dataset
