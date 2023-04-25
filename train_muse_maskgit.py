@@ -41,6 +41,11 @@ def parse_args():
         help="Don't do center crop.",
     )
     parser.add_argument(
+        "--random_crop",
+        action="store_true",
+        help="Crop the images at random locations instead of cropping from the center.",
+    )
+    parser.add_argument(
         "--no_flip",
         action="store_true",
         help="Don't flip image.",
@@ -289,6 +294,12 @@ def parse_args():
         default=10,
         help="Number of rows that will be shown when using Pytorch's built-in profiler.",
     )
+    parser.add_argument(
+        "--gpu",
+        type=int,
+        default=0,
+        help="GPU to use in case we want to use a specific GPU for inference.",
+    )
     # Parse the argument
     return parser.parse_args()
 
@@ -318,7 +329,7 @@ def main():
     if args.vae_path:
         accelerator.print("Loading Muse VQGanVAE")
         vae = VQGanVAE(dim=args.dim, vq_codebook_size=args.vq_codebook_size).to(
-            accelerator.device
+            accelerator.device if args.gpu == 0 else f"cuda:{args.gpu}"
         )
 
         accelerator.print("Resuming VAE from: ", args.vae_path)
@@ -350,8 +361,8 @@ def main():
         heads=args.heads,  # attention heads,
         ff_mult=args.ff_mult,  # feedforward expansion factor
         t5_name=args.t5_name,  # name of your T5
-    ).to(accelerator.device)
-    transformer.t5.to(accelerator.device)
+    ).to(accelerator.device if args.gpu == 0 else f"cuda:{args.gpu}")
+    transformer.t5.to(accelerator.device if args.gpu == 0 else f"cuda:{args.gpu}")
 
     # (2) pass your trained VAE and the base transformer to MaskGit
 
@@ -361,7 +372,7 @@ def main():
         image_size=args.image_size,  # image size
         cond_drop_prob=args.cond_drop_prob,  # conditional dropout, for classifier free guidance
         cond_image_size=args.cond_image_size,
-    ).to(accelerator.device)
+    ).to(accelerator.device if args.gpu == 0 else f"cuda:{args.gpu}")
 
     # load the maskgit transformer from disk if we have previously trained one
     if args.resume_path:
@@ -386,9 +397,10 @@ def main():
         transformer.tokenizer,
         image_column=args.image_column,
         caption_column=args.caption_column,
-        center_crop=not args.no_center_crop,
+        center_crop=True if not args.no_center_crop and not args.random_crop else False,
         flip=not args.no_flip,
         using_taming=True if args.taming_model_path else False,
+        random_crop=args.random_crop if args.random_crop else False,
     )
     dataloader, validation_dataloader = split_dataset_into_dataloaders(
         dataset, args.valid_frac, args.seed, args.batch_size
