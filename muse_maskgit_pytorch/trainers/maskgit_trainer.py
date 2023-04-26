@@ -1,10 +1,7 @@
 from torchvision.utils import save_image
 from PIL import Image
-from muse_maskgit_pytorch.vqgan_vae import VQGanVAE
-
 from ema_pytorch import EMA
 from diffusers.optimization import get_scheduler
-
 from muse_maskgit_pytorch.muse_maskgit_pytorch import MaskGit
 from muse_maskgit_pytorch.trainers.base_accelerated_trainer import (
     BaseAcceleratedTrainer,
@@ -12,9 +9,7 @@ from muse_maskgit_pytorch.trainers.base_accelerated_trainer import (
 )
 from muse_maskgit_pytorch.t5 import t5_encode_text_from_encoded
 import torch.nn.functional as F
-
 import os
-
 
 def noop(*args, **kwargs):
     pass
@@ -84,6 +79,9 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
         self.save_results_every = save_results_every
         self.batch_size = batch_size
         self.current_step = current_step
+        self.counter_1 = 0
+        self.counter_2 = 0
+
         # maskgit
         self.model = maskgit
         self.model.vae.requires_grad_(False)
@@ -176,60 +174,76 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
             self.lr_scheduler.step()
             self.optim.step()
             self.optim.zero_grad()
+
+        # we made two counters, one for the results and one for the
+        # model so we can properly save them without any error
+        # no matter what batch_size and gradient_accumulation_steps we use.
+        self.counter_1 += (self.batch_size * self.gradient_accumulation_steps)
+        self.counter_2 += (self.batch_size * self.gradient_accumulation_steps)
+
+        self.steps += (self.batch_size * self.gradient_accumulation_steps)
         if self.accelerator.sync_gradients:
-            self.steps += self.batch_size * self.gradient_accumulation_steps
+
             if self.use_ema:
                 ema_model.update()
+
             logs = {"loss": train_loss, "lr": self.lr_scheduler.get_last_lr()[0]}
             #self.print(
                 #f"{steps}: maskgit loss: {logs['loss']} - lr: {self.lr_scheduler.get_last_lr()[0]}"
             #)
-            self.accelerator.log(logs, steps)
-
-            logs['save_model_every'] = ''
-            if steps != self.current_step:
-                if steps % self.save_model_every == 1:
-                    state_dict = self.accelerator.unwrap_model(self.model).state_dict()
-                    maskgit_save_name = (
-                            "maskgit_superres" if self.model.cond_image_size else "maskgit"
-                        )
-                    file_name = (
-                            f"{maskgit_save_name}.{steps}.pt"
-                            if not self.only_save_last_checkpoint
-                            else f"{maskgit_save_name}.pt"
-                        )
-
-                    model_path = str(self.results_dir / file_name)
-                    self.accelerator.save(state_dict, model_path)
-
-                    if self.use_ema:
-                        ema_state_dict = self.accelerator.unwrap_model(
-                                self.ema_model
-                                ).state_dict()
-                        file_name = (
-                                f"{maskgit_save_name}.{steps}.ema.pt"
-                                if not self.only_save_last_checkpoint
-                                else f"{maskgit_save_name}.ema.pt"
-                            )
-                        model_path = str(self.results_dir / file_name)
-                        self.accelerator.save(ema_state_dict, model_path)
-
-                    #self.print(f"{steps}: saving model to {str(self.results_dir)}")
-                    logs['save_model_every'] = f"\nStep: {steps} | Saving model to {str(self.results_dir)}"
+            self.accelerator.log(logs, steps - 1)
 
             logs['save_results_every'] = ''
-            if steps % self.save_results_every == 1:
-                cond_image = None
-                if self.model.cond_image_size:
-                    self.print(
-                            "With conditional image training, we recommend keeping the validation prompts to empty strings"
+            if self.accelerator.is_main_process:
+                if self.counter_1 == self.save_results_every:
+                    cond_image = None
+                    if self.model.cond_image_size:
+                        self.print(
+                                "With conditional image training, we recommend keeping the validation prompts to empty strings"
+                            )
+                        cond_image = F.interpolate(imgs[0], 256)
+
+                    self.log_validation_images(
+                            self.validation_prompts, self.steps - 1, cond_image=cond_image
                         )
-                    cond_image = F.interpolate(imgs[0], 256)
+                    #self.print(f"{steps}: saving to {str(self.results_dir)}")
+                    logs['save_results_every'] = f"{steps - 1}: saving to {str(self.results_dir)}"
 
-                self.log_validation_images(
-                        self.validation_prompts, self.steps, cond_image=cond_image
-                    )
-                #self.print(f"{steps}: saving to {str(self.results_dir)}")
-                logs['save_results_every'] = f"{steps}: saving to {str(self.results_dir)}"
+                    self.counter_1 = 0
 
-            return logs
+            logs['save_model_every'] = ''
+            self.accelerator.wait_for_everyone()
+            if self.accelerator.is_main_process:
+                if steps != self.current_step:
+                    if self.counter_2 == self.save_model_every:
+                        state_dict = self.accelerator.unwrap_model(self.model).state_dict()
+                        maskgit_save_name = (
+                                "maskgit_superres" if self.model.cond_image_size else "maskgit"
+                            )
+                        file_name = (
+                                f"{maskgit_save_name}.{steps - 1}.pt"
+                                if not self.only_save_last_checkpoint
+                                else f"{maskgit_save_name}.pt"
+                            )
+
+                        model_path = str(self.results_dir / file_name)
+                        self.accelerator.save(state_dict, model_path)
+
+                        if self.use_ema:
+                            ema_state_dict = self.accelerator.unwrap_model(
+                                    self.ema_model
+                                    ).state_dict()
+                            file_name = (
+                                    f"{maskgit_save_name}.{steps - 1}.ema.pt"
+                                    if not self.only_save_last_checkpoint
+                                    else f"{maskgit_save_name}.ema.pt"
+                                )
+                            model_path = str(self.results_dir / file_name)
+                            self.accelerator.save(ema_state_dict, model_path)
+
+                        #self.print(f"{steps}: saving model to {str(self.results_dir)}")
+                        logs['save_model_every'] = f"\nStep: {steps - 1} | Saving model to {str(self.results_dir)}"
+
+                        self.counter_2 = 0
+
+                return logs
