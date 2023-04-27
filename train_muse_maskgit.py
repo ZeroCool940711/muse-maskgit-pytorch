@@ -306,12 +306,19 @@ def parse_args():
 
 def main():
     args = parse_args()
+
+    assert args.batch_size * args.gradient_accumulation_steps < args.save_results_every, \
+           f"The value of '--save_results_every' must be higher than {args.batch_size * args.gradient_accumulation_steps}"
+    assert args.batch_size * args.gradient_accumulation_steps < args.save_model_every, \
+            f"The value of '--save_model_every' must be higher than {args.batch_size * args.gradient_accumulation_steps}"
+
     accelerator = get_accelerator(
         log_with=args.log_with,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
         logging_dir=args.logging_dir,
     )
+
 
     if args.train_data_dir:
         dataset = get_dataset_from_dataroot(
