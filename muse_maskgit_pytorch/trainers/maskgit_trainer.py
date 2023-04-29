@@ -215,7 +215,7 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
             self.accelerator.wait_for_everyone()
             if self.accelerator.is_main_process:
                 if steps != self.current_step:
-                    if self.counter_2 == self.save_model_every:
+                    if self.counter_2 == self.save_model_every or steps == self.num_train_steps:
                         state_dict = self.accelerator.unwrap_model(self.model).state_dict()
                         maskgit_save_name = (
                                 "maskgit_superres" if self.model.cond_image_size else "maskgit"

@@ -1,25 +1,8 @@
-from pathlib import Path
-from shutil import rmtree
-from datetime import datetime
-
-from beartype import beartype
 from PIL import Image
 import torch
-from torch import nn
-
-from torch.optim import Adam, AdamW
-from lion_pytorch import Lion
-
-from torch.utils.data import DataLoader, random_split
-from torch.utils.tensorboard import SummaryWriter
 from torchvision.utils import make_grid, save_image
-
 from muse_maskgit_pytorch.vqgan_vae import VQGanVAE
-
 from einops import rearrange
-
-from accelerate import Accelerator, DistributedType, DistributedDataParallelKwargs
-
 from ema_pytorch import EMA
 import numpy as np
 from muse_maskgit_pytorch.trainers.base_accelerated_trainer import (
