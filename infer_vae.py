@@ -15,7 +15,8 @@ from muse_maskgit_pytorch.dataset import (
 from tqdm import tqdm
 import argparse
 import PIL
-
+import glob, re
+from pathlib import Path
 
 def parse_args():
     # Create the parser
@@ -171,6 +172,11 @@ def parse_args():
         default=0,
         help="GPU to use in case we want to use a specific GPU for inference.",
     )
+    parser.add_argument(
+        "--latest_checkpoint",
+        action="store_true",
+        help="Use the latest checkpoint using the vae_path folder instead of using just a specific vae_path.",
+    )
 
     # Parse the argument
     return parser.parse_args()
@@ -256,10 +262,41 @@ def main():
             accelerator.device if args.gpu == 0 else f"cuda:{args.gpu}"
         )
 
-        accelerator.print("Resuming VAE from: ", args.vae_path)
-        vae.load(
-            args.vae_path
-        )  # you will want to load the exponentially moving averaged VAE
+        if args.latest_checkpoint:
+            accelerator.print("Finding latest checkpoint...")
+            orig_vae_path = args.vae_path
+
+
+            if os.path.isfile(args.vae_path) or '.pt' in args.vae_path:
+                # If args.vae_path is a file, split it into directory and filename
+                args.vae_path, _ = os.path.split(args.vae_path)
+
+            checkpoint_files = glob.glob(os.path.join(args.vae_path, "vae.*.pt"))
+            if checkpoint_files:
+                latest_checkpoint_file = max(checkpoint_files, key=lambda x: int(re.search(r'\d+', x).group()))
+
+                # Check if latest checkpoint is empty or unreadable
+                if os.path.getsize(latest_checkpoint_file) == 0 or not os.access(latest_checkpoint_file, os.R_OK):
+                    accelerator.print(f"Warning: latest checkpoint {latest_checkpoint_file} is empty or unreadable.")
+                    if len(checkpoint_files) > 1:
+                        # Use the second last checkpoint as a fallback
+                        latest_checkpoint_file = max(checkpoint_files[:-1], key=lambda x: int(re.search(r'\d+', x).group()))
+                        accelerator.print("Using second last checkpoint: ", latest_checkpoint_file)
+                    else:
+                        accelerator.print("No usable checkpoint found.")
+                elif latest_checkpoint_file != orig_vae_path:
+                    accelerator.print("Resuming VAE from latest checkpoint: ", latest_checkpoint_file)
+                else:
+                    accelerator.print("Using checkpoint specified in vae_path: ", orig_vae_path)
+
+                args.vae_path = latest_checkpoint_file
+            else:
+                accelerator.print("No checkpoints found in directory: ", args.vae_path)
+        else:
+            accelerator.print("Resuming VAE from: ", args.vae_path)
+
+        vae.load(args.vae_path)
+
 
     elif args.taming_model_path:
         print("Loading Taming VQGanVAE")
