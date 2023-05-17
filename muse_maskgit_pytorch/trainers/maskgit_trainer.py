@@ -153,7 +153,8 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
         self.model.train()
         # logs
         train_loss = 0
-        with self.accelerator.accumulate(self.model):
+        #with self.accelerator.accumulate(self.model):
+        for _ in range(self.gradient_accumulation_steps):
             imgs, input_ids, attn_mask = next(self.dl_iter)
             imgs, input_ids, attn_mask = (
                     imgs.to(device),
@@ -167,13 +168,14 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
             avg_loss = self.accelerator.gather(loss.repeat(self.batch_size)).mean()
             train_loss += avg_loss.item() / self.gradient_accumulation_steps
             self.accelerator.backward(loss)
-            if exists(self.max_grad_norm):
-                self.accelerator.clip_grad_norm_(
-                        self.model.parameters(), self.max_grad_norm
-                    )
-            self.lr_scheduler.step()
-            self.optim.step()
-            self.optim.zero_grad()
+
+        if exists(self.max_grad_norm):
+            self.accelerator.clip_grad_norm_(
+                    self.model.parameters(), self.max_grad_norm
+                )
+        self.lr_scheduler.step()
+        self.optim.step()
+        self.optim.zero_grad()
 
         # we made two counters, one for the results and one for the
         # model so we can properly save them without any error
@@ -191,7 +193,7 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
             #self.print(
                 #f"{steps}: maskgit loss: {logs['loss']} - lr: {self.lr_scheduler.get_last_lr()[0]}"
             #)
-            self.accelerator.log(logs, steps - 1)
+            self.accelerator.log(logs, steps)
 
             logs['save_results_every'] = ''
             if self.accelerator.is_main_process:
@@ -204,10 +206,10 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
                         cond_image = F.interpolate(imgs[0], 256)
 
                     self.log_validation_images(
-                            self.validation_prompts, self.steps - 1, cond_image=cond_image
+                            self.validation_prompts, self.steps, cond_image=cond_image
                         )
                     #self.print(f"{steps}: saving to {str(self.results_dir)}")
-                    logs['save_results_every'] = f"{steps - 1}: saving to {str(self.results_dir)}"
+                    logs['save_results_every'] = f"{steps}: saving to {str(self.results_dir)}"
 
                     self.counter_1 = 0
 
@@ -221,7 +223,7 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
                                 "maskgit_superres" if self.model.cond_image_size else "maskgit"
                             )
                         file_name = (
-                                f"{maskgit_save_name}.{steps - 1}.pt"
+                                f"{maskgit_save_name}.{steps}.pt"
                                 if not self.only_save_last_checkpoint
                                 else f"{maskgit_save_name}.pt"
                             )
@@ -234,7 +236,7 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
                                     self.ema_model
                                     ).state_dict()
                             file_name = (
-                                    f"{maskgit_save_name}.{steps - 1}.ema.pt"
+                                    f"{maskgit_save_name}.{steps}.ema.pt"
                                     if not self.only_save_last_checkpoint
                                     else f"{maskgit_save_name}.ema.pt"
                                 )
@@ -242,7 +244,7 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
                             self.accelerator.save(ema_state_dict, model_path)
 
                         #self.print(f"{steps}: saving model to {str(self.results_dir)}")
-                        logs['save_model_every'] = f"\nStep: {steps - 1} | Saving model to {str(self.results_dir)}"
+                        logs['save_model_every'] = f"\nStep: {steps} | Saving model to {str(self.results_dir)}"
 
                         self.counter_2 = 0
 
