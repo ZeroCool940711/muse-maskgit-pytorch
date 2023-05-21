@@ -1,9 +1,6 @@
-import torch
-import torch.nn.functional as F
 from torchvision.utils import save_image
-from pathlib import Path
-from datasets import load_dataset
-import os
+import os, glob, re
+import argparse
 from muse_maskgit_pytorch import (
     VQGanVAE,
     VQGanVAETaming,
@@ -12,13 +9,6 @@ from muse_maskgit_pytorch import (
     MaskGitTransformer,
     get_accelerator,
 )
-from muse_maskgit_pytorch.dataset import (
-    get_dataset_from_dataroot,
-    ImageTextDataset,
-    split_dataset_into_dataloaders,
-)
-
-import argparse
 
 
 def parse_args():
@@ -155,6 +145,11 @@ def parse_args():
         default=None,
         help="path to your trained VQGAN config. This should be a .yaml file. (only valid when taming option is enabled)",
     )
+    parser.add_argument(
+        "--latest_checkpoint",
+        action="store_true",
+        help="Automatically find and use the latest checkpoint in the folder.",
+    )
     # Parse the argument
     return parser.parse_args()
 
@@ -171,13 +166,43 @@ def main():
     if args.vae_path:
         accelerator.print("Loading Muse VQGanVAE")
         vae = VQGanVAE(dim=args.dim, vq_codebook_size=args.vq_codebook_size).to(
-            accelerator.device
+            accelerator.device if args.gpu == 0 else f"cuda:{args.gpu}"
         )
 
-        accelerator.print("Resuming VAE from: ", args.vae_path)
-        vae.load(
-            args.vae_path
-        )  # you will want to load the exponentially moving averaged VAE
+        if args.latest_checkpoint:
+            accelerator.print("Finding latest checkpoint...")
+            orig_vae_path = args.vae_path
+
+
+            if os.path.isfile(args.vae_path) or '.pt' in args.vae_path:
+                # If args.vae_path is a file, split it into directory and filename
+                args.vae_path, _ = os.path.split(args.vae_path)
+
+            checkpoint_files = glob.glob(os.path.join(args.vae_path, "vae.*.pt"))
+            if checkpoint_files:
+                latest_checkpoint_file = max(checkpoint_files, key=lambda x: int(re.search(r'\d+', x).group()))
+
+                # Check if latest checkpoint is empty or unreadable
+                if os.path.getsize(latest_checkpoint_file) == 0 or not os.access(latest_checkpoint_file, os.R_OK):
+                    accelerator.print(f"Warning: latest checkpoint {latest_checkpoint_file} is empty or unreadable.")
+                    if len(checkpoint_files) > 1:
+                        # Use the second last checkpoint as a fallback
+                        latest_checkpoint_file = max(checkpoint_files[:-1], key=lambda x: int(re.search(r'\d+', x).group()))
+                        accelerator.print("Using second last checkpoint: ", latest_checkpoint_file)
+                    else:
+                        accelerator.print("No usable checkpoint found.")
+                elif latest_checkpoint_file != orig_vae_path:
+                    accelerator.print("Resuming VAE from latest checkpoint: ", latest_checkpoint_file)
+                else:
+                    accelerator.print("Using checkpoint specified in vae_path: ", orig_vae_path)
+
+                args.vae_path = latest_checkpoint_file
+            else:
+                accelerator.print("No checkpoints found in directory: ", args.vae_path)
+        else:
+            accelerator.print("Resuming VAE from: ", args.vae_path)
+
+        vae.load(args.vae_path)
 
     elif args.taming_model_path:
         print("Loading Taming VQGanVAE")
@@ -203,8 +228,8 @@ def main():
         heads=args.heads,  # attention heads,
         ff_mult=args.ff_mult,  # feedforward expansion factor
         t5_name=args.t5_name,  # name of your T5
-    ).to(accelerator.device)
-    transformer.t5.to(accelerator.device)
+    ).to(accelerator.device if args.gpu == 0 else f"cuda:{args.gpu}")
+    transformer.t5.to(accelerator.device if args.gpu == 0 else f"cuda:{args.gpu}")
 
     # (2) pass your trained VAE and the base transformer to MaskGit
 
@@ -214,15 +239,46 @@ def main():
         image_size=args.image_size,  # image size
         cond_drop_prob=args.cond_drop_prob,  # conditional dropout, for classifier free guidance
         cond_image_size=args.cond_image_size,
-    ).to(accelerator.device)
+    ).to(accelerator.device if args.gpu == 0 else f"cuda:{args.gpu}")
 
     # load the maskgit transformer from disk if we have previously trained one
     if args.resume_path:
-        accelerator.print(f"Resuming MaskGit from: {args.resume_path}")
+        if args.latest_checkpoint:
+            accelerator.print("Finding latest checkpoint...")
+            orig_vae_path = args.resume_path
+
+
+            if os.path.isfile(args.resume_path) or '.pt' in args.resume_path:
+                # If args.resume_path is a file, split it into directory and filename
+                args.resume_path, _ = os.path.split(args.resume_path)
+
+            checkpoint_files = glob.glob(os.path.join(args.resume_path, "maskgit.*.pt"))
+            if checkpoint_files:
+                latest_checkpoint_file = max(checkpoint_files, key=lambda x: int(re.search(r'\d+', x).group()))
+
+                # Check if latest checkpoint is empty or unreadable
+                if os.path.getsize(latest_checkpoint_file) == 0 or not os.access(latest_checkpoint_file, os.R_OK):
+                    accelerator.print(f"Warning: latest checkpoint {latest_checkpoint_file} is empty or unreadable.")
+                    if len(checkpoint_files) > 1:
+                        # Use the second last checkpoint as a fallback
+                        latest_checkpoint_file = max(checkpoint_files[:-1], key=lambda x: int(re.search(r'\d+', x).group()))
+                        accelerator.print("Using second last checkpoint: ", latest_checkpoint_file)
+                    else:
+                        accelerator.print("No usable checkpoint found.")
+                elif latest_checkpoint_file != orig_vae_path:
+                    accelerator.print("Resuming MaskGit from latest checkpoint: ", latest_checkpoint_file)
+                else:
+                    accelerator.print("Using checkpoint specified in resume_path: ", orig_vae_path)
+
+                args.resume_path = latest_checkpoint_file
+            else:
+                accelerator.print("No checkpoints found in directory: ", args.resume_path)
+        else:
+            accelerator.print("Resuming MaskGit from: ", args.resume_path)
+
         maskgit.load(args.resume_path)
     else:
         accelerator.print("We need a MaskGit model to do inference with. Please provide a path to a checkpoint..")
-
 
     texts=[args.prompt] if '|' not in args.prompt else str(args.prompt).split("|")
     print (f"Prompt: {texts}")
@@ -230,11 +286,6 @@ def main():
     # ready your training text and images
     images = maskgit.generate(
         texts=texts,
-        #texts = [
-            #'a whale breaching from afar',
-            #'young girl blowing out candles on her birthday cake',
-            #'fireworks with blue and green sparkles'
-            #],
         cond_scale = 3.0, # conditioning scale for classifier free guidance
         timesteps = args.timesteps,
         )
@@ -246,7 +297,6 @@ def main():
     os.makedirs(str(f"{args.results_dir}/"), exist_ok = True)
 
     save_image(images, save_path)
-
 
 if __name__ == "__main__":
     main()

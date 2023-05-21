@@ -297,7 +297,6 @@ def main():
 
         vae.load(args.vae_path)
 
-
     elif args.taming_model_path:
         print("Loading Taming VQGanVAE")
         vae = VQGanVAETaming(
