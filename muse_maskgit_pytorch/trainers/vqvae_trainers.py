@@ -49,6 +49,7 @@ class VQGanVAETrainer(BaseAcceleratedTrainer):
         lr_scheduler_type="constant",
         lr_warmup_steps=500,
         num_cycles=1,
+        scheduler_power=1.0,
         discr_max_grad_norm=None,
         use_ema=True,
         ema_beta=0.995,
@@ -105,6 +106,7 @@ class VQGanVAETrainer(BaseAcceleratedTrainer):
             num_warmup_steps=lr_warmup_steps * self.gradient_accumulation_steps,
             num_training_steps=self.num_train_steps * self.gradient_accumulation_steps,
             num_cycles=num_cycles,
+            power=scheduler_power,
         )
 
         self.lr_scheduler_discr = get_scheduler(
@@ -113,6 +115,7 @@ class VQGanVAETrainer(BaseAcceleratedTrainer):
             num_warmup_steps=lr_warmup_steps * self.gradient_accumulation_steps,
             num_training_steps=self.num_train_steps * self.gradient_accumulation_steps,
             num_cycles=num_cycles,
+            power=scheduler_power,
         )
 
         self.discr_max_grad_norm = discr_max_grad_norm
@@ -196,6 +199,7 @@ class VQGanVAETrainer(BaseAcceleratedTrainer):
             save_file = str(self.results_dir / f"{filename}.png")
             save_image(grid, save_file)
             log_imgs.append(np.asarray(Image.open(save_file)))
+
         super().log_validation_images(log_imgs, steps, prompts=prompts)
 
 

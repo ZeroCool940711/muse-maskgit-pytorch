@@ -199,6 +199,12 @@ def parse_args():
         help="The number of hard restarts used in COSINE_WITH_RESTARTS scheduler.",
     )
     parser.add_argument(
+        "--scheduler_power",
+        type=float,
+        default=1.0,
+        help="Controls the power of the polynomial decay schedule used by the CosineScheduleWithWarmup scheduler. It determines the rate at which the learning rate decreases during the schedule.",
+    )
+    parser.add_argument(
         "--resume_path",
         type=str,
         default=None,
@@ -391,6 +397,7 @@ def main():
         lr_scheduler_type=args.lr_scheduler,
         lr_warmup_steps=args.lr_warmup_steps,
         num_cycles=args.num_cycles,
+        scheduler_power=args.scheduler_power,
         max_grad_norm=args.max_grad_norm,
         discr_max_grad_norm=args.discr_max_grad_norm,
         save_results_every=args.save_results_every,
