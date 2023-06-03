@@ -1,0 +1,428 @@
+from datasets import load_dataset
+import os, glob, re
+from muse_maskgit_pytorch import (
+    VQGanVAE,
+    VQGanVAETrainer,
+    get_accelerator,
+    VQGanVAETaming,
+)
+from muse_maskgit_pytorch.dataset import (
+    get_dataset_from_dataroot,
+    ImageDataset,
+    split_dataset_into_dataloaders,
+)
+
+import argparse
+
+def parse_args():
+    # Create the parser
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--webdataset", type=str, default=None, help="Path to webdataset if using one."
+    )
+    parser.add_argument(
+        "--only_save_last_checkpoint",
+        action="store_true",
+        help="Only save last checkpoint.",
+    )
+    parser.add_argument(
+        "--validation_image_scale",
+        default=1,
+        type=float,
+        help="Factor by which to scale the validation images.",
+    )
+    parser.add_argument(
+        "--no_center_crop",
+        action="store_true",
+        help="Don't do center crop.",
+    )
+    parser.add_argument(
+        "--random_crop",
+        action="store_true",
+        help="Crop the images at random locations instead of cropping from the center.",
+    )
+    parser.add_argument(
+        "--no_flip",
+        action="store_true",
+        help="Don't flip image.",
+    )
+    parser.add_argument(
+        "--dataset_save_path",
+        type=str,
+        default="dataset",
+        help="Path to save the dataset if you are making one from a directory",
+    )
+    parser.add_argument(
+        "--clear_previous_experiments",
+        action="store_true",
+        help="Whether to clear previous experiments.",
+    )
+    parser.add_argument(
+        "--max_grad_norm", type=float, default=None, help="Max gradient norm."
+    )
+    parser.add_argument(
+        "--discr_max_grad_norm",
+        type=float,
+        default=None,
+        help="Max gradient norm for discriminator.",
+    )
+    parser.add_argument("--seed", type=int, default=42, help="Seed.")
+    parser.add_argument(
+        "--valid_frac", type=float, default=0.05, help="validation fraction."
+    )
+    parser.add_argument("--use_ema", action="store_true", help="Whether to use ema.")
+    parser.add_argument("--ema_beta", type=float, default=0.995, help="Ema beta.")
+    parser.add_argument(
+        "--ema_update_after_step", type=int, default=1, help="Ema update after step."
+    )
+    parser.add_argument(
+        "--ema_update_every",
+        type=int,
+        default=1,
+        help="Ema update every this number of steps.",
+    )
+    parser.add_argument(
+        "--apply_grad_penalty_every",
+        type=int,
+        default=4,
+        help="Apply gradient penalty every this number of steps.",
+    )
+    parser.add_argument(
+        "--image_column",
+        type=str,
+        default="image",
+        help="The column of the dataset containing an image.",
+    )
+    parser.add_argument(
+        "--caption_column",
+        type=str,
+        default="caption",
+        help="The column of the dataset containing a caption or a list of captions.",
+    )
+    parser.add_argument(
+        "--log_with",
+        type=str,
+        default="wandb",
+        help=(
+            'The integration to report the results and logs to. Supported platforms are `"tensorboard"`'
+            ' (default), `"wandb"` and `"comet_ml"`. Use `"all"` to report to all integrations.'
+        ),
+    )
+    parser.add_argument(
+        "--mixed_precision",
+        type=str,
+        default="no",
+        choices=["no", "fp16", "bf16"],
+        help="Precision to train on.",
+    )
+    parser.add_argument(
+        "--use_8bit_adam",
+        action="store_true",
+        help="Whether to use the 8bit adam optimiser",
+    )
+    parser.add_argument(
+        "--results_dir",
+        type=str,
+        default="results",
+        help="Path to save the training samples and checkpoints",
+    )
+    parser.add_argument(
+        "--logging_dir",
+        type=str,
+        default="results/logs",
+        help="Path to log the losses and LR",
+    )
+
+    # vae_trainer args
+    parser.add_argument(
+        "--dataset_name",
+        type=str,
+        default=None,
+        help="Name of the huggingface dataset used.",
+    )
+    parser.add_argument(
+        "--train_data_dir",
+        type=str,
+        default=None,
+        help="Dataset folder where your input images for training are.",
+    )
+    parser.add_argument(
+        "--num_train_steps",
+        type=int,
+        default=50000,
+        help="Total number of steps to train for. eg. 50000.",
+    )
+    parser.add_argument("--dim", type=int, default=128, help="Model dimension.")
+    parser.add_argument("--batch_size", type=int, default=1, help="Batch Size.")
+    parser.add_argument("--lr", type=float, default=3e-4, help="Learning Rate.")
+    parser.add_argument(
+        "--gradient_accumulation_steps",
+        type=int,
+        default=1,
+        help="Gradient Accumulation.",
+    )
+    parser.add_argument(
+        "--save_results_every",
+        type=int,
+        default=100,
+        help="Save results every this number of steps.",
+    )
+    parser.add_argument(
+        "--save_model_every",
+        type=int,
+        default=500,
+        help="Save the model every this number of steps.",
+    )
+    parser.add_argument("--vq_codebook_size", type=int, default=256, help="Image Size.")
+    parser.add_argument(
+        "--image_size",
+        type=int,
+        default=256,
+        help="Image size. You may want to start with small images, and then curriculum learn to larger ones, but because the vae is all convolution, it should generalize to 512 (as in paper) without training on it",
+    )
+    parser.add_argument(
+        "--lr_scheduler",
+        type=str,
+        default="constant",
+        help='The scheduler type to use. Choose between ["linear", "cosine", "cosine_with_restarts", "polynomial", "constant", "constant_with_warmup"]',
+    )
+    parser.add_argument(
+        "--lr_warmup_steps",
+        type=int,
+        default=0,
+        help="Number of steps for the warmup in the lr scheduler.",
+    )
+    parser.add_argument(
+        "--num_cycles",
+        type=int,
+        default=1,
+        help="The number of hard restarts used in COSINE_WITH_RESTARTS scheduler.",
+    )
+    parser.add_argument(
+        "--scheduler_power",
+        type=float,
+        default=1.0,
+        help="Controls the power of the polynomial decay schedule used by the CosineScheduleWithWarmup scheduler. It determines the rate at which the learning rate decreases during the schedule.",
+    )
+    parser.add_argument(
+        "--resume_path",
+        type=str,
+        default=None,
+        help="Path to the last saved checkpoint. 'results/vae.steps.pt'",
+    )
+    parser.add_argument(
+        "--optimizer",
+        type=str,
+        default="Lion",
+        help="Optimizer to use. Choose between: ['Adam', 'AdamW','Lion','DAdaptAdam', 'DAdaptAdaGrad', 'DAdaptSGD','Adafactor', 'AdaBound', 'AdaMod', 'AccSGD', 'AdamP', 'AggMo', 'DiffGrad', \
+        'Lamb', 'NovoGrad', 'PID', 'QHAdam', 'QHM', 'RAdam', 'SGDP', 'SGDW', 'Shampoo', 'SWATS', 'Yogi']. Default: Lion",
+    )
+    parser.add_argument(
+        "--weight_decay", type=float,
+        default=0.0,
+        help="Optimizer weight_decay to use. Default: 0.0",
+    )
+    parser.add_argument(
+        "--taming_model_path",
+        type=str,
+        default=None,
+        help="path to your trained VQGAN weights. This should be a .ckpt file. (only valid when taming option is enabled)",
+    )
+    parser.add_argument(
+        "--taming_config_path",
+        type=str,
+        default=None,
+        help="path to your trained VQGAN config. This should be a .yaml file. (only valid when taming option is enabled)",
+    )
+    parser.add_argument(
+        "--use_profiling",
+        action="store_true",
+        help="Use Pytorch's built-in profiler to gather information about the training which can help improve speed by checking the impact some options have on the training when enabled.",
+    )
+    parser.add_argument(
+        "--no_cache",
+        action="store_true",
+        help="Do not save the dataset pyarrow cache/files to disk to save disk space and reduce the time it takes to launch the training.",
+    )
+    parser.add_argument(
+        "--profile_frequency",
+        type=int,
+        default=1,
+        help="Number of steps that will be used as interval for saving the profile from Pytorch's built-in profiler.",
+    )
+    parser.add_argument(
+        "--row_limit",
+        type=int,
+        default=10,
+        help="Number of rows that will be shown when using Pytorch's built-in profiler.",
+    )
+    parser.add_argument(
+        "--gpu",
+        type=int,
+        default=0,
+        help="GPU to use in case we want to use a specific GPU for inference.",
+    )
+    parser.add_argument(
+        "--latest_checkpoint",
+        action="store_true",
+        help="Automatically find and use the latest checkpoint in the folder.",
+    )
+    # Parse the argument
+    return parser.parse_args()
+
+
+def preprocess_webdataset(args, image):
+    return {args.image_column: image}
+
+
+def main():
+    args = parse_args()
+
+    assert args.batch_size * args.gradient_accumulation_steps < args.save_results_every, \
+           f"The value of '--save_results_every' must be higher than {args.batch_size * args.gradient_accumulation_steps}"
+    assert args.batch_size * args.gradient_accumulation_steps < args.save_model_every, \
+            f"The value of '--save_model_every' must be higher than {args.batch_size * args.gradient_accumulation_steps}"
+
+    accelerator = get_accelerator(
+        log_with=args.log_with,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        mixed_precision=args.mixed_precision,
+        logging_dir=args.logging_dir,
+    )
+    if accelerator.is_main_process:
+        accelerator.init_trackers("muse_vae", config=vars(args))
+    if args.webdataset is not None:
+        import webdataset as wds
+
+        dataset = (
+            wds.WebDataset(args.webdataset).shuffle(1000).decode("rgb").to_tuple("png")
+        )
+        dataset = dataset.map(lambda image: preprocess_webdataset(args, image))
+    elif args.train_data_dir:
+        dataset = get_dataset_from_dataroot(
+            args.train_data_dir,
+            image_column=args.image_column,
+            caption_column=args.caption_column,
+            save_path=args.dataset_save_path,
+            no_cache=args.no_cache if args.no_cache else False,
+        )
+    elif args.dataset_name:
+        dataset = load_dataset(args.dataset_name)["train"]
+
+    vae = VQGanVAE(dim=args.dim, vq_codebook_size=args.vq_codebook_size)
+    if args.taming_model_path:
+        print("Loading Taming VQGanVAE")
+        vae = VQGanVAETaming(
+            vqgan_model_path=args.taming_model_path,
+            vqgan_config_path=args.taming_config_path,
+        )
+        args.num_tokens = vae.codebook_size
+        args.seq_len = vae.get_encoded_fmap_size(args.image_size) ** 2
+
+    if args.resume_path:
+        accelerator.print("Loading Muse VQGanVAE")
+        vae = VQGanVAE(dim=args.dim, vq_codebook_size=args.vq_codebook_size).to(
+            accelerator.device if args.gpu == 0 else f"cuda:{args.gpu}"
+        )
+
+        if args.latest_checkpoint:
+            accelerator.print("Finding latest checkpoint...")
+            orig_vae_path = args.resume_path
+
+
+            if os.path.isfile(args.resume_path) or '.pt' in args.resume_path:
+                # If args.resume_path is a file, split it into directory and filename
+                args.resume_path, _ = os.path.split(args.resume_path)
+
+            checkpoint_files = glob.glob(os.path.join(args.resume_path, "vae.*.pt"))
+            if checkpoint_files:
+                latest_checkpoint_file = max(checkpoint_files, key=lambda x: int(re.search(r'vae\.(\d+)\.pt', x).group(1)))
+
+                # Check if latest checkpoint is empty or unreadable
+                if os.path.getsize(latest_checkpoint_file) == 0 or not os.access(latest_checkpoint_file, os.R_OK):
+                    accelerator.print(f"Warning: latest checkpoint {latest_checkpoint_file} is empty or unreadable.")
+                    if len(checkpoint_files) > 1:
+                        # Use the second last checkpoint as a fallback
+                        latest_checkpoint_file = max(checkpoint_files[:-1], key=lambda x: int(re.search(r'vae\.(\d+)\.pt', x).group(1)))
+                        accelerator.print("Using second last checkpoint: ", latest_checkpoint_file)
+                    else:
+                        accelerator.print("No usable checkpoint found.")
+                elif latest_checkpoint_file != orig_vae_path:
+                    accelerator.print("Resuming VAE from latest checkpoint: ", latest_checkpoint_file)
+                else:
+                    accelerator.print("Using checkpoint specified in vae_path: ", orig_vae_path)
+
+                args.resume_path = latest_checkpoint_file
+            else:
+                accelerator.print("No checkpoints found in directory: ", args.resume_path)
+        else:
+            accelerator.print("Resuming VAE from: ", args.resume_path)
+
+        vae.load(args.resume_path)
+
+        resume_from_parts = args.resume_path.split(".")
+        for i in range(len(resume_from_parts) - 1, -1, -1):
+            if resume_from_parts[i].isdigit():
+                current_step = int(resume_from_parts[i])
+                accelerator.print(f"Found step {current_step} for the VAE model.")
+                break
+        if current_step == 0:
+            accelerator.print("No step found for the VAE model.")
+    else:
+        accelerator.print("No step found for the VAE model.")
+        current_step = 0
+
+    dataset = ImageDataset(
+        dataset,
+        args.image_size,
+        image_column=args.image_column,
+        center_crop=True if not args.no_center_crop and not args.random_crop else False,
+        flip=not args.no_flip,
+        using_taming=True if args.taming_model_path else False,
+        random_crop=args.random_crop if args.random_crop else False
+    )
+    # dataloader
+
+    dataloader, validation_dataloader = split_dataset_into_dataloaders(
+        dataset, args.valid_frac, args.seed, args.batch_size
+    )
+    trainer = VQGanVAETrainer(
+        vae,
+        dataloader,
+        validation_dataloader,
+        accelerator,
+        current_step=current_step + 1 if current_step != 0 else current_step,
+        num_train_steps=args.num_train_steps,
+        lr=args.lr,
+        lr_scheduler_type=args.lr_scheduler,
+        lr_warmup_steps=args.lr_warmup_steps,
+        num_cycles=args.num_cycles,
+        scheduler_power=args.scheduler_power,
+        max_grad_norm=args.max_grad_norm,
+        discr_max_grad_norm=args.discr_max_grad_norm,
+        save_results_every=args.save_results_every,
+        save_model_every=args.save_model_every,
+        results_dir=args.results_dir,
+        logging_dir=args.logging_dir,
+        use_ema=args.use_ema,
+        ema_beta=args.ema_beta,
+        ema_update_after_step=args.ema_update_after_step,
+        ema_update_every=args.ema_update_every,
+        apply_grad_penalty_every=args.apply_grad_penalty_every,
+        batch_size=args.batch_size,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        clear_previous_experiments=args.clear_previous_experiments,
+        validation_image_scale=args.validation_image_scale,
+        only_save_last_checkpoint=args.only_save_last_checkpoint,
+        use_profiling=args.use_profiling,
+        profile_frequency=args.profile_frequency,
+        row_limit=args.row_limit,
+        optimizer=args.optimizer,
+        use_8bit_adam=args.use_8bit_adam
+    )
+
+    trainer.train()
+
+
+if __name__ == "__main__":
+    main()
