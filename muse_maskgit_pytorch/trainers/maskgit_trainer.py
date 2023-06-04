@@ -184,6 +184,8 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
         # no matter what batch_size and gradient_accumulation_steps we use.
         self.counter_1 += (self.batch_size * self.gradient_accumulation_steps)
         self.counter_2 += (self.batch_size * self.gradient_accumulation_steps)
+        #self.counter_1 = 0
+        #self.counter_2 = 0
 
         self.steps += (self.batch_size * self.gradient_accumulation_steps)
         if self.accelerator.sync_gradients:
@@ -195,23 +197,24 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
             #self.print(
                 #f"{steps}: maskgit loss: {logs['loss']} - lr: {self.lr_scheduler.get_last_lr()[0]}"
             #)
-            self.accelerator.log(logs, steps)
+            self.accelerator.log(logs, steps - 1)
 
             logs['save_results_every'] = ''
             if self.accelerator.is_main_process:
                 if self.counter_1 == self.save_results_every:
                     cond_image = None
                     if self.model.cond_image_size:
-                        self.print(
-                                "With conditional image training, we recommend keeping the validation prompts to empty strings"
-                            )
-                        cond_image = F.interpolate(imgs[0], 256)
+                        self.accelerator.print(
+                            "With conditional image training, we set the validation prompts to empty strings"
+                        )
+                        cond_image = F.interpolate(imgs, self.model.cond_image_size, mode="nearest")
+                        self.validation_prompts = [""] * self.batch_size
 
                     self.log_validation_images(
-                            self.validation_prompts, self.steps, cond_image=cond_image
+                            self.validation_prompts, self.steps - 1, cond_image=cond_image
                         )
                     #self.print(f"{steps}: saving to {str(self.results_dir)}")
-                    logs['save_results_every'] = f"{steps}: saving to {str(self.results_dir)}"
+                    logs['save_results_every'] = f"{steps - 1}: saving to {str(self.results_dir)}"
 
                     self.counter_1 = 0
 
@@ -219,13 +222,13 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
             self.accelerator.wait_for_everyone()
             if self.accelerator.is_main_process:
                 if steps != self.current_step:
-                    if self.counter_2 == self.save_model_every or steps == self.num_train_steps:
+                    if self.counter_2 == self.save_model_every or steps - 1 == self.num_train_steps:
                         state_dict = self.accelerator.unwrap_model(self.model).state_dict()
                         maskgit_save_name = (
                                 "maskgit_superres" if self.model.cond_image_size else "maskgit"
                             )
                         file_name = (
-                                f"{maskgit_save_name}.{steps}.pt"
+                                f"{maskgit_save_name}.{steps - 1}.pt"
                                 if not self.only_save_last_checkpoint
                                 else f"{maskgit_save_name}.pt"
                             )
@@ -238,7 +241,7 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
                                     self.ema_model
                                     ).state_dict()
                             file_name = (
-                                    f"{maskgit_save_name}.{steps}.ema.pt"
+                                    f"{maskgit_save_name}.{steps - 1}.ema.pt"
                                     if not self.only_save_last_checkpoint
                                     else f"{maskgit_save_name}.ema.pt"
                                 )
@@ -246,7 +249,7 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
                             self.accelerator.save(ema_state_dict, model_path)
 
                         #self.print(f"{steps}: saving model to {str(self.results_dir)}")
-                        logs['save_model_every'] = f"\nStep: {steps} | Saving model to {str(self.results_dir)}"
+                        logs['save_model_every'] = f"\nStep: {steps - 1} | Saving model to {str(self.results_dir)}"
 
                         self.counter_2 = 0
 
