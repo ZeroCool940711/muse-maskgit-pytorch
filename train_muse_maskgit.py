@@ -69,7 +69,7 @@ def parse_args():
         default=1024,
         help="The sequence length. Must be equivalent to fmap_size ** 2 in vae",
     )
-    parser.add_argument("--depth", type=int, default=2, help="The depth of model")
+    parser.add_argument("--depth", type=int, default=4, help="The depth of model")
     parser.add_argument(
         "--dim_head", type=int, default=64, help="Attention head dimension"
     )
