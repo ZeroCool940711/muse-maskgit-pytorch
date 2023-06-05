@@ -90,6 +90,8 @@ class VQGanVAETrainer(BaseAcceleratedTrainer):
         )
 
         self.current_step = current_step
+        self.counter_1 = 0
+        self.counter_2 = 0
 
         # arguments used for the training script,
         # we are going to use them later to save them to a config file.
@@ -109,8 +111,8 @@ class VQGanVAETrainer(BaseAcceleratedTrainer):
         self.lr_scheduler = get_scheduler(
             lr_scheduler_type,
             optimizer=self.optim,
-            num_warmup_steps=lr_warmup_steps * self.gradient_accumulation_steps,
-            num_training_steps=self.num_train_steps * self.gradient_accumulation_steps,
+            num_warmup_steps=lr_warmup_steps,
+            num_training_steps=self.num_train_steps,
             num_cycles=num_cycles,
             power=scheduler_power,
         )
@@ -118,8 +120,8 @@ class VQGanVAETrainer(BaseAcceleratedTrainer):
         self.lr_scheduler_discr = get_scheduler(
             lr_scheduler_type,
             optimizer=self.discr_optim,
-            num_warmup_steps=lr_warmup_steps * self.gradient_accumulation_steps,
-            num_training_steps=self.num_train_steps * self.gradient_accumulation_steps,
+            num_warmup_steps=lr_warmup_steps,
+            num_training_steps=self.num_train_steps,
             num_cycles=num_cycles,
             power=scheduler_power,
         )
@@ -288,6 +290,12 @@ class VQGanVAETrainer(BaseAcceleratedTrainer):
         logs["lr"] = self.lr_scheduler.get_last_lr()[0]
         self.accelerator.log(logs, step=steps)
 
+        # we made two counters, one for the results and one for the
+        # model so we can properly save them without any error
+        # no matter what batch_size and gradient_accumulation_steps we use.
+        self.counter_1 += (self.batch_size * self.gradient_accumulation_steps)
+        self.counter_2 += (self.batch_size * self.gradient_accumulation_steps)
+
         # update exponential moving averaged generator
 
         if self.use_ema:
@@ -295,7 +303,7 @@ class VQGanVAETrainer(BaseAcceleratedTrainer):
 
         # sample results every so often
         logs['save_results_every'] = ''
-        if (steps % self.save_results_every) == 1:
+        if self.counter_1 == self.save_results_every:
             vaes_to_evaluate = ((self.model, str(steps - 1)),)
 
             if self.use_ema:
@@ -307,11 +315,13 @@ class VQGanVAETrainer(BaseAcceleratedTrainer):
             #self.print(f"{steps}: saving to {str(self.results_dir)}")
             logs['save_results_every'] = f"\nStep: {steps - 1} | Saving to {str(self.results_dir)}"
 
+            self.counter_1 = 0
+
         # save model every so often
         logs['save_model_every'] = ''
         self.accelerator.wait_for_everyone()
         if steps != self.current_step:
-            if self.is_main and (steps % self.save_model_every) == 1 or steps == self.num_train_steps:
+            if self.counter_2 == self.save_model_every or steps == self.num_train_steps:
                 state_dict = self.accelerator.unwrap_model(self.model).state_dict()
                 file_name = (
                     f"vae.{steps}.pt" if not self.only_save_last_checkpoint else "vae.pt"
@@ -340,6 +350,8 @@ class VQGanVAETrainer(BaseAcceleratedTrainer):
 
                 #self.print(f"{steps}: saving model to {str(self.results_dir)}")
                 logs['save_model_every'] =  f"\nStep: {self.steps + (self.batch_size * self.gradient_accumulation_steps)} | Saving model to {str(self.results_dir)}"
+
+                self.counter_2 = 0
 
         self.steps = self.steps + (self.batch_size * self.gradient_accumulation_steps)
 
