@@ -174,6 +174,7 @@ def parse_args():
         help="Save the model every this number of steps.",
     )
     parser.add_argument("--vq_codebook_size", type=int, default=256, help="Image Size.")
+    parser.add_argument("--vq_codebook_dim", type=int, default=256, help="VQ Codebook dimensions.")
     parser.add_argument(
         "--image_size",
         type=int,
@@ -267,6 +268,11 @@ def parse_args():
         action="store_true",
         help="Automatically find and use the latest checkpoint in the folder.",
     )
+    parser.add_argument(
+        "--use_l2_recon_loss",
+        action="store_true",
+        help="Use F.mse_loss instead of F.l1_loss.",
+    )
     # Parse the argument
     return parser.parse_args()
 
@@ -309,7 +315,7 @@ def main():
     elif args.dataset_name:
         dataset = load_dataset(args.dataset_name)["train"]
 
-    vae = VQGanVAE(dim=args.dim, vq_codebook_size=args.vq_codebook_size)
+    vae = VQGanVAE(dim=args.dim, vq_codebook_dim=args.vq_codebook_dim, vq_codebook_size=args.vq_codebook_size, l2_recon_loss=args.use_l2_recon_loss)
     if args.taming_model_path:
         print("Loading Taming VQGanVAE")
         vae = VQGanVAETaming(
@@ -321,7 +327,7 @@ def main():
 
     if args.resume_path:
         accelerator.print("Loading Muse VQGanVAE")
-        vae = VQGanVAE(dim=args.dim, vq_codebook_size=args.vq_codebook_size).to(
+        vae = VQGanVAE(dim=args.dim, vq_codebook_dim=args.vq_codebook_dim, vq_codebook_size=args.vq_codebook_size, l2_recon_loss=args.use_l2_recon_loss).to(
             accelerator.device if args.gpu == 0 else f"cuda:{args.gpu}"
         )
 

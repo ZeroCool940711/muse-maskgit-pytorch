@@ -205,6 +205,7 @@ def parse_args():
         help="Save the model every this number of steps.",
     )
     parser.add_argument("--vq_codebook_size", type=int, default=256, help="Image Size.")
+    parser.add_argument("--vq_codebook_dim", type=int, default=256, help="VQ Codebook dimensions.")
     parser.add_argument(
         "--cond_drop_prob",
         type=float,
@@ -312,6 +313,11 @@ def parse_args():
         default=False,
         help="Generate example YAML configuration file",
     )
+    parser.add_argument(
+        "--use_l2_recon_loss",
+        action="store_true",
+        help="Use F.mse_loss instead of F.l1_loss.",
+    )
     # Parse the argument
     return parser.parse_args()
 
@@ -395,7 +401,7 @@ def main():
             # merge the config file and the cli arguments.
             conf = OmegaConf.merge(conf, cli_conf)
 
-        vae = VQGanVAE(dim=args.dim, vq_codebook_size=args.vq_codebook_size).to(
+        vae = VQGanVAE(dim=args.dim, vq_codebook_dim=args.vq_codebook_dim, vq_codebook_size=args.vq_codebook_size, l2_recon_loss=args.use_l2_recon_loss).to(
             accelerator.device if args.gpu == 0 else f"cuda:{args.gpu}"
         )
         vae.load(args.vae_path)
