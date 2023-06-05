@@ -10,6 +10,7 @@ from muse_maskgit_pytorch.trainers.base_accelerated_trainer import (
 from muse_maskgit_pytorch.t5 import t5_encode_text_from_encoded
 import torch.nn.functional as F
 import os
+from omegaconf import OmegaConf
 
 def noop(*args, **kwargs):
     pass
@@ -55,7 +56,8 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
         row_limit=10,
         optimizer="Lion",
         weight_decay=0.0,
-        use_8bit_adam=False
+        use_8bit_adam=False,
+        args=None,
     ):
         super().__init__(
             dataloader,
@@ -82,6 +84,10 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
         self.current_step = current_step
         self.counter_1 = 0
         self.counter_2 = 0
+
+        # arguments used for the training script,
+        # we are going to use them later to save them to a config file.
+        self.args = args
 
         # maskgit
         self.model = maskgit
@@ -236,6 +242,11 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
                         model_path = str(self.results_dir / file_name)
                         self.accelerator.save(state_dict, model_path)
 
+                        if self.args and self.args.save_config:
+                                # save config file next to the model file.
+                                conf = OmegaConf.create(vars(self.args))
+                                OmegaConf.save(conf, f"{model_path}.yaml")
+
                         if self.use_ema:
                             ema_state_dict = self.accelerator.unwrap_model(
                                     self.ema_model
@@ -247,6 +258,12 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
                                 )
                             model_path = str(self.results_dir / file_name)
                             self.accelerator.save(ema_state_dict, model_path)
+
+                            if self.args and self.args.save_config:
+                                # save config file next to the model file.
+                                conf = OmegaConf.create(vars(self.args))
+                                OmegaConf.save(conf, f"{model_path}.yaml")
+
 
                         #self.print(f"{steps}: saving model to {str(self.results_dir)}")
                         logs['save_model_every'] = f"\nStep: {steps - 1} | Saving model to {str(self.results_dir)}"

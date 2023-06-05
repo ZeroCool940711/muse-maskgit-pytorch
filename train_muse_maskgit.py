@@ -13,9 +13,8 @@ from muse_maskgit_pytorch.dataset import (
     ImageTextDataset,
     split_dataset_into_dataloaders,
 )
-
 import argparse
-
+from omegaconf import OmegaConf
 
 def parse_args():
     # Create the parser
@@ -307,12 +306,24 @@ def parse_args():
             action="store_true",
             help="Automatically find and use the latest checkpoint in the folder.",
         )
+    parser.add_argument(
+        "--save_config",
+        action="store_true",
+        default=False,
+        help="Generate example YAML configuration file",
+    )
     # Parse the argument
     return parser.parse_args()
 
-
 def main():
     args = parse_args()
+
+    accelerator = get_accelerator(
+        log_with=args.log_with,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        mixed_precision=args.mixed_precision,
+        logging_dir=args.logging_dir,
+    )
 
     assert args.batch_size * args.gradient_accumulation_steps < args.save_results_every, \
            f"The value of '--save_results_every' must be higher than {args.batch_size * args.gradient_accumulation_steps}"
@@ -325,7 +336,6 @@ def main():
         mixed_precision=args.mixed_precision,
         logging_dir=args.logging_dir,
     )
-
 
     if args.train_data_dir:
         dataset = get_dataset_from_dataroot(
@@ -341,13 +351,10 @@ def main():
         raise Exception("You can't pass vae_path and taming args at the same time.")
 
     if args.vae_path:
-        accelerator.print("Loading Muse VQGanVAE")
-        vae = VQGanVAE(dim=args.dim, vq_codebook_size=args.vq_codebook_size).to(
-            accelerator.device if args.gpu == 0 else f"cuda:{args.gpu}"
-        )
+        print("Loading Muse VQGanVAE")
 
         if args.latest_checkpoint:
-            accelerator.print("Finding latest checkpoint...")
+            print("Finding latest checkpoint...")
             orig_vae_path = args.vae_path
 
 
@@ -361,24 +368,36 @@ def main():
 
                 # Check if latest checkpoint is empty or unreadable
                 if os.path.getsize(latest_checkpoint_file) == 0 or not os.access(latest_checkpoint_file, os.R_OK):
-                    accelerator.print(f"Warning: latest checkpoint {latest_checkpoint_file} is empty or unreadable.")
+                    print(f"Warning: latest checkpoint {latest_checkpoint_file} is empty or unreadable.")
                     if len(checkpoint_files) > 1:
                         # Use the second last checkpoint as a fallback
                         latest_checkpoint_file = max(checkpoint_files[:-1], key=lambda x: int(re.search(r'vae\.(\d+)\.pt', x).group(1)))
-                        accelerator.print("Using second last checkpoint: ", latest_checkpoint_file)
+                        print("Using second last checkpoint: ", latest_checkpoint_file)
                     else:
-                        accelerator.print("No usable checkpoint found.")
+                        print("No usable checkpoint found.")
                 elif latest_checkpoint_file != orig_vae_path:
-                    accelerator.print("Resuming VAE from latest checkpoint: ", latest_checkpoint_file)
+                    print("Resuming VAE from latest checkpoint: ", latest_checkpoint_file)
                 else:
-                    accelerator.print("Using checkpoint specified in vae_path: ", orig_vae_path)
+                    print("Using checkpoint specified in vae_path: ", orig_vae_path)
 
                 args.vae_path = latest_checkpoint_file
             else:
-                accelerator.print("No checkpoints found in directory: ", args.vae_path)
+                print("No checkpoints found in directory: ", args.vae_path)
         else:
-            accelerator.print("Resuming VAE from: ", args.vae_path)
+            print("Resuming VAE from: ", args.vae_path)
 
+        # use config next to checkpoint if there is one and merge the cli arguments to it
+        # the cli arguments will take priority so we can use it to override any value we want.
+        if os.path.exists(f"{args.vae_path}.yaml"):
+            print("Config file found, reusing config from it. Use cli arguments to override any desired value.")
+            conf = OmegaConf.load(f"{args.vae_path}.yaml")
+            cli_conf = OmegaConf.from_cli()
+            # merge the config file and the cli arguments.
+            conf = OmegaConf.merge(conf, cli_conf)
+
+        vae = VQGanVAE(dim=args.dim, vq_codebook_size=args.vq_codebook_size).to(
+            accelerator.device if args.gpu == 0 else f"cuda:{args.gpu}"
+        )
         vae.load(args.vae_path)
 
     elif args.taming_model_path:
@@ -407,16 +426,6 @@ def main():
         t5_name=args.t5_name,  # name of your T5
     ).to(accelerator.device if args.gpu == 0 else f"cuda:{args.gpu}")
     transformer.t5.to(accelerator.device if args.gpu == 0 else f"cuda:{args.gpu}")
-
-    # (2) pass your trained VAE and the base transformer to MaskGit
-
-    maskgit = MaskGit(
-        vae=vae,  # vqgan vae
-        transformer=transformer,  # transformer
-        image_size=args.image_size,  # image size
-        cond_drop_prob=args.cond_drop_prob,  # conditional dropout, for classifier free guidance
-        cond_image_size=args.cond_image_size,
-    ).to(accelerator.device if args.gpu == 0 else f"cuda:{args.gpu}")
 
     # load the maskgit transformer from disk if we have previously trained one
     if args.resume_path:
@@ -453,6 +462,24 @@ def main():
         else:
             accelerator.print("Resuming MaskGit from: ", args.resume_path)
 
+        # use config next to checkpoint if there is one and merge the cli arguments to it
+        # the cli arguments will take priority so we can use it to override any value we want.
+        if os.path.exists(f"{args.resume_path}.yaml"):
+            accelerator.print("Config file found, reusing config from it. Use cli arguments to override any desired value.")
+            conf = OmegaConf.load(f"{args.resume_path}.yaml")
+            cli_conf = OmegaConf.from_cli()
+            # merge the config file and the cli arguments.
+            conf = OmegaConf.merge(conf, cli_conf)
+
+        # (2) pass your trained VAE and the base transformer to MaskGit
+        maskgit = MaskGit(
+            vae=vae,  # vqgan vae
+            transformer=transformer,  # transformer
+            image_size=args.image_size,  # image size
+            cond_drop_prob=args.cond_drop_prob,  # conditional dropout, for classifier free guidance
+            cond_image_size=args.cond_image_size,
+        ).to(accelerator.device if args.gpu == 0 else f"cuda:{args.gpu}")
+
         maskgit.load(args.resume_path)
 
         resume_from_parts = args.resume_path.split(".")
@@ -466,6 +493,16 @@ def main():
     else:
         accelerator.print("No step found for the MaskGit model.")
         current_step = 0
+
+        # (2) pass your trained VAE and the base transformer to MaskGit
+        maskgit = MaskGit(
+            vae=vae,  # vqgan vae
+            transformer=transformer,  # transformer
+            image_size=args.image_size,  # image size
+            cond_drop_prob=args.cond_drop_prob,  # conditional dropout, for classifier free guidance
+            cond_image_size=args.cond_image_size,
+        ).to(accelerator.device if args.gpu == 0 else f"cuda:{args.gpu}")
+
 
     dataset = ImageTextDataset(
         dataset,
@@ -515,7 +552,8 @@ def main():
         row_limit=args.row_limit,
         optimizer=args.optimizer,
         weight_decay=args.weight_decay,
-        use_8bit_adam=args.use_8bit_adam
+        use_8bit_adam=args.use_8bit_adam,
+        args=args,
     )
 
     trainer.train()

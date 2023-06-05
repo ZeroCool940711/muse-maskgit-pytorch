@@ -11,6 +11,7 @@ from muse_maskgit_pytorch.trainers.base_accelerated_trainer import (
 )
 from diffusers.optimization import get_scheduler
 import torchvision.transforms.functional as TF
+from omegaconf import OmegaConf
 
 def noop(*args, **kwargs):
     pass
@@ -63,7 +64,8 @@ class VQGanVAETrainer(BaseAcceleratedTrainer):
         row_limit=10,
         optimizer="Adam",
         weight_decay=0.0,
-        use_8bit_adam=False
+        use_8bit_adam=False,
+        args=None,
     ):
         super().__init__(
             dataloader,
@@ -88,6 +90,10 @@ class VQGanVAETrainer(BaseAcceleratedTrainer):
         )
 
         self.current_step = current_step
+
+        # arguments used for the training script,
+        # we are going to use them later to save them to a config file.
+        self.args = args
 
         # vae
         self.model = vae
@@ -308,25 +314,32 @@ class VQGanVAETrainer(BaseAcceleratedTrainer):
             if self.is_main and (steps % self.save_model_every) == 1 or steps == self.num_train_steps:
                 state_dict = self.accelerator.unwrap_model(self.model).state_dict()
                 file_name = (
-                    f"vae.{steps - 1}.pt" if not self.only_save_last_checkpoint else "vae.pt"
+                    f"vae.{steps}.pt" if not self.only_save_last_checkpoint else "vae.pt"
                 )
                 model_path = str(self.results_dir / file_name)
                 self.accelerator.save(state_dict, model_path)
+
+                if self.args and self.args.save_config:
+                    # save config file next to the model file.
+                    conf = OmegaConf.create(vars(self.args))
+                    OmegaConf.save(conf, f"{model_path}.yaml")
 
                 if self.use_ema:
                     ema_state_dict = self.accelerator.unwrap_model(
                         self.ema_model
                     ).state_dict()
-                    file_name = (
-                        f"vae.{steps -1}.ema.pt"
-                        if not self.only_save_last_checkpoint
-                        else "vae.ema.pt"
-                    )
+
+                    file_name = (f"vae.{steps}.ema.pt" if not self.only_save_last_checkpoint else "vae.ema.pt")
                     model_path = str(self.results_dir / file_name)
                     self.accelerator.save(ema_state_dict, model_path)
 
+                    if self.args and self.args.save_config:
+                        # save config file next to the model file.
+                        conf = OmegaConf.create(vars(self.args))
+                        OmegaConf.save(conf, f"{model_path}.yaml")
+
                 #self.print(f"{steps}: saving model to {str(self.results_dir)}")
-                logs['save_model_every'] =  f"\nStep: {steps - 1} | Saving model to {str(self.results_dir)}"
+                logs['save_model_every'] =  f"\nStep: {self.steps + (self.batch_size * self.gradient_accumulation_steps)} | Saving model to {str(self.results_dir)}"
 
         self.steps = self.steps + (self.batch_size * self.gradient_accumulation_steps)
 
