@@ -105,8 +105,8 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
         self.lr_scheduler = get_scheduler(
             lr_scheduler_type,
             optimizer=self.optim,
-            num_warmup_steps=lr_warmup_steps * self.gradient_accumulation_steps,
-            num_training_steps=self.num_train_steps * self.gradient_accumulation_steps,
+            num_warmup_steps=lr_warmup_steps,
+            num_training_steps=self.num_train_steps,
             num_cycles=num_cycles,
             power=scheduler_power,
         )
@@ -153,7 +153,7 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
 
     def train_step(self):
         device = self.device
-        steps = int(self.steps.item())
+        steps = int(self.steps.item() + (self.batch_size * self.gradient_accumulation_steps))
         apply_grad_penalty = not (steps % self.apply_grad_penalty_every)
 
         if self.use_ema:
@@ -190,8 +190,6 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
         # no matter what batch_size and gradient_accumulation_steps we use.
         self.counter_1 += (self.batch_size * self.gradient_accumulation_steps)
         self.counter_2 += (self.batch_size * self.gradient_accumulation_steps)
-        #self.counter_1 = 0
-        #self.counter_2 = 0
 
         self.steps += (self.batch_size * self.gradient_accumulation_steps)
         if self.accelerator.sync_gradients:
@@ -217,7 +215,7 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
                         self.validation_prompts = [""] * self.batch_size
 
                     self.log_validation_images(
-                            self.validation_prompts, self.steps - 1, cond_image=cond_image
+                            self.validation_prompts, steps - 1, cond_image=cond_image
                         )
                     #self.print(f"{steps}: saving to {str(self.results_dir)}")
                     logs['save_results_every'] = f"{steps - 1}: saving to {str(self.results_dir)}"
@@ -228,7 +226,7 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
             self.accelerator.wait_for_everyone()
             if self.accelerator.is_main_process:
                 if steps != self.current_step:
-                    if self.counter_2 == self.save_model_every or steps - 1 == self.num_train_steps:
+                    if self.counter_2 == self.save_model_every or steps == self.num_train_steps:
                         state_dict = self.accelerator.unwrap_model(self.model).state_dict()
                         maskgit_save_name = (
                                 "maskgit_superres" if self.model.cond_image_size else "maskgit"

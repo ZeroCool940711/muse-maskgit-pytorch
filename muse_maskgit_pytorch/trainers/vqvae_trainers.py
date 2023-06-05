@@ -214,7 +214,7 @@ class VQGanVAETrainer(BaseAcceleratedTrainer):
     def train_step(self):
         device = self.device
 
-        steps = int(self.steps.item())
+        steps = int(self.steps.item() + (self.batch_size * self.gradient_accumulation_steps))
         apply_grad_penalty = (steps % self.apply_grad_penalty_every) == 0
 
         self.model.train()
@@ -324,7 +324,7 @@ class VQGanVAETrainer(BaseAcceleratedTrainer):
             if self.counter_2 == self.save_model_every or steps == self.num_train_steps:
                 state_dict = self.accelerator.unwrap_model(self.model).state_dict()
                 file_name = (
-                    f"vae.{steps}.pt" if not self.only_save_last_checkpoint else "vae.pt"
+                    f"vae.{steps - 1}.pt" if not self.only_save_last_checkpoint else "vae.pt"
                 )
                 model_path = str(self.results_dir / file_name)
                 self.accelerator.save(state_dict, model_path)
@@ -339,7 +339,7 @@ class VQGanVAETrainer(BaseAcceleratedTrainer):
                         self.ema_model
                     ).state_dict()
 
-                    file_name = (f"vae.{steps}.ema.pt" if not self.only_save_last_checkpoint else "vae.ema.pt")
+                    file_name = (f"vae.{steps - 1}.ema.pt" if not self.only_save_last_checkpoint else "vae.ema.pt")
                     model_path = str(self.results_dir / file_name)
                     self.accelerator.save(ema_state_dict, model_path)
 
@@ -349,7 +349,7 @@ class VQGanVAETrainer(BaseAcceleratedTrainer):
                         OmegaConf.save(conf, f"{model_path}.yaml")
 
                 #self.print(f"{steps}: saving model to {str(self.results_dir)}")
-                logs['save_model_every'] =  f"\nStep: {self.steps + (self.batch_size * self.gradient_accumulation_steps)} | Saving model to {str(self.results_dir)}"
+                logs['save_model_every'] =  f"\nStep: {steps - 1} | Saving model to {str(self.results_dir)}"
 
                 self.counter_2 = 0
 
