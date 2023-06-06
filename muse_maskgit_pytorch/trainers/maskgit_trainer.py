@@ -142,7 +142,7 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
             cond_scale=cond_scale,
             temperature=temperature,
         )
-        step = int(step.item())
+        #step = int(step.item())
         save_file = str(self.results_dir / f"MaskGit" / f"maskgit_{step}.png")
         os.makedirs(str(self.results_dir / f"MaskGit"), exist_ok=True)
 
