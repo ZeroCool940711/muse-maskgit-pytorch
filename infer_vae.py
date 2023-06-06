@@ -371,7 +371,7 @@ def main():
                     now = datetime.now().strftime("%m-%d-%Y_%H-%M-%S")
                     hash = hashlib.sha1(input_image.tobytes()).hexdigest()
 
-                    filename = f"{hash}_{now}.png"
+                    filename = f"{hash}_{now}-{os.path.basename(args.vae_path)}.png"
                     grid_image.save(f"{output_dir}/{filename}")
 
                     # Remove input and output images after the grid was made.
