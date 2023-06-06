@@ -105,6 +105,7 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=512, help="Batch Size.")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning Rate.")
     parser.add_argument("--vq_codebook_size", type=int, default=256, help="Image Size.")
+    parser.add_argument("--vq_codebook_dim", type=int, default=256, help="VQ Codebook dimensions.")
     parser.add_argument(
         "--image_size",
         type=int,
@@ -258,7 +259,7 @@ def main():
 
     if args.vae_path:
         accelerator.print("Loading Muse VQGanVAE")
-        vae = VQGanVAE(dim=args.dim, vq_codebook_size=args.vq_codebook_size).to(
+        vae = VQGanVAE(dim=args.dim, vq_codebook_size=args.vq_codebook_size, vq_codebook_dim=args.vq_codebook_dim).to(
             accelerator.device if args.gpu == 0 else f"cuda:{args.gpu}"
         )
 
@@ -273,14 +274,14 @@ def main():
 
             checkpoint_files = glob.glob(os.path.join(args.vae_path, "vae.*.pt"))
             if checkpoint_files:
-                latest_checkpoint_file = max(checkpoint_files, key=lambda x: int(re.search(r'vae\.(\d+)\.pt', x).group(1)))
+                latest_checkpoint_file = max(checkpoint_files,key=lambda x: int(re.search(r'vae\.(\d+)\.pt$', x).group(1)) if not x.endswith('ema.pt') else -1)
 
                 # Check if latest checkpoint is empty or unreadable
                 if os.path.getsize(latest_checkpoint_file) == 0 or not os.access(latest_checkpoint_file, os.R_OK):
                     accelerator.print(f"Warning: latest checkpoint {latest_checkpoint_file} is empty or unreadable.")
                     if len(checkpoint_files) > 1:
                         # Use the second last checkpoint as a fallback
-                        latest_checkpoint_file = max(checkpoint_files[:-1], key=lambda x: int(re.search(r'vae\.(\d+)\.pt', x).group(1)))
+                        latest_checkpoint_file = max(checkpoint_files[:-1], key=lambda x: int(re.search(r'vae\.(\d+)\.pt$', x).group(1)) if not x.endswith('ema.pt') else -1)
                         accelerator.print("Using second last checkpoint: ", latest_checkpoint_file)
                     else:
                         accelerator.print("No usable checkpoint found.")

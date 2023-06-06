@@ -114,6 +114,7 @@ def parse_args():
         help="Gradient Accumulation.",
     )
     parser.add_argument("--vq_codebook_size", type=int, default=256, help="Image Size.")
+    parser.add_argument("--vq_codebook_dim", type=int, default=256, help="VQ Codebook dimensions.")
     parser.add_argument(
         "--cond_drop_prob",
         type=float,
@@ -165,7 +166,7 @@ def main():
 
     if args.vae_path:
         accelerator.print("Loading Muse VQGanVAE")
-        vae = VQGanVAE(dim=args.dim, vq_codebook_size=args.vq_codebook_size).to(
+        vae = VQGanVAE(dim=args.dim, vq_codebook_size=args.vq_codebook_size, vq_codebook_dim=args.vq_codebook_dim).to(
             accelerator.device if args.gpu == 0 else f"cuda:{args.gpu}"
         )
 
