@@ -111,8 +111,8 @@ class VQGanVAETrainer(BaseAcceleratedTrainer):
         self.lr_scheduler = get_scheduler(
             lr_scheduler_type,
             optimizer=self.optim,
-            num_warmup_steps=lr_warmup_steps,
-            num_training_steps=self.num_train_steps,
+            num_warmup_steps=lr_warmup_steps * self.gradient_accumulation_steps,
+            num_training_steps=self.num_train_steps * self.gradient_accumulation_steps,
             num_cycles=num_cycles,
             power=scheduler_power,
         )
@@ -120,8 +120,8 @@ class VQGanVAETrainer(BaseAcceleratedTrainer):
         self.lr_scheduler_discr = get_scheduler(
             lr_scheduler_type,
             optimizer=self.discr_optim,
-            num_warmup_steps=lr_warmup_steps,
-            num_training_steps=self.num_train_steps,
+            num_warmup_steps=lr_warmup_steps * self.gradient_accumulation_steps,
+            num_training_steps=self.num_train_steps * self.gradient_accumulation_steps,
             num_cycles=num_cycles,
             power=scheduler_power,
         )
