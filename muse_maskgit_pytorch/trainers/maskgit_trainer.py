@@ -240,7 +240,7 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
                         model_path = str(self.results_dir / file_name)
                         self.accelerator.save(state_dict, model_path)
 
-                        if self.args and self.args.save_config:
+                        if self.args and not self.args.do_not_save_config:
                                 # save config file next to the model file.
                                 conf = OmegaConf.create(vars(self.args))
                                 OmegaConf.save(conf, f"{model_path}.yaml")
@@ -257,7 +257,7 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
                             model_path = str(self.results_dir / file_name)
                             self.accelerator.save(ema_state_dict, model_path)
 
-                            if self.args and self.args.save_config:
+                            if self.args and not self.args.do_not_save_config:
                                 # save config file next to the model file.
                                 conf = OmegaConf.create(vars(self.args))
                                 OmegaConf.save(conf, f"{model_path}.yaml")

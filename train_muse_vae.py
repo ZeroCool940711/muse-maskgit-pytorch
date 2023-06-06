@@ -269,6 +269,12 @@ def parse_args():
         help="Automatically find and use the latest checkpoint in the folder.",
     )
     parser.add_argument(
+        "--do_not_save_config",
+        action="store_true",
+        default=False,
+        help="Generate example YAML configuration file",
+    )
+    parser.add_argument(
         "--use_l2_recon_loss",
         action="store_true",
         help="Use F.mse_loss instead of F.l1_loss.",
@@ -424,7 +430,8 @@ def main():
         profile_frequency=args.profile_frequency,
         row_limit=args.row_limit,
         optimizer=args.optimizer,
-        use_8bit_adam=args.use_8bit_adam
+        use_8bit_adam=args.use_8bit_adam,
+        args=args,
     )
 
     trainer.train()

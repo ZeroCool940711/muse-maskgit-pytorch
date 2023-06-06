@@ -308,7 +308,7 @@ def parse_args():
             help="Automatically find and use the latest checkpoint in the folder.",
         )
     parser.add_argument(
-        "--save_config",
+        "--do_not_save_config",
         action="store_true",
         default=False,
         help="Generate example YAML configuration file",
