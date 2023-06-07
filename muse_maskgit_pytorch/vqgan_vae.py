@@ -578,24 +578,20 @@ class VQGanVAE(nn.Module):
                 loss = discr_loss + gp
 
             if return_recons:
-                return loss, fmap
+                return F.relu(loss), fmap
 
-            return loss
+            return F.relu(loss)
 
         # reconstruction loss
-
         recon_loss = self.recon_loss_fn(fmap, img)
 
         # early return if training on grayscale
-
         if not self.use_vgg_and_gan:
             if return_recons:
-                return recon_loss, fmap
-
-            return recon_loss
+                return F.relu(recon_loss), fmap
+            return F.relu(recon_loss)
 
         # perceptual loss
-
         img_vgg_input = img
         fmap_vgg_input = fmap
 
@@ -608,14 +604,13 @@ class VQGanVAE(nn.Module):
 
         img_vgg_feats = self.vgg(img_vgg_input)
         recon_vgg_feats = self.vgg(fmap_vgg_input)
-        perceptual_loss = F.mse_loss(img_vgg_feats, recon_vgg_feats)
+        perceptual_loss = F.relu(F.mse_loss(img_vgg_feats, recon_vgg_feats))
 
         # generator loss
-
         gen_loss = self.gen_loss(self.discr(fmap))
+        gen_loss = F.relu(gen_loss)
 
         # calculate adaptive weight
-
         last_dec_layer = self.enc_dec.last_dec_layer
 
         norm_grad_wrt_gen_loss = grad_layer_wrt_loss(gen_loss, last_dec_layer).norm(p=2)
@@ -629,13 +624,9 @@ class VQGanVAE(nn.Module):
         adaptive_weight.clamp_(max=1e4)
 
         # combine losses
-        # recon loss is reconstruction loss mse
-        # perceptual loss is loss in vgg features mse
-        # commit loss is loss in quanitizing in vq mse
-        # gan loss is
-        loss = recon_loss + perceptual_loss + commit_loss + adaptive_weight * gen_loss
+        loss = F.relu(recon_loss) + F.relu(perceptual_loss) + F.relu(commit_loss) + adaptive_weight * gen_loss
 
         if return_recons:
-            return loss, fmap
+            return F.relu(loss), fmap
 
-        return loss
+        return F.relu(loss)

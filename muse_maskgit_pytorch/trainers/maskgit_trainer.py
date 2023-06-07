@@ -161,17 +161,17 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
         self.model.train()
         # logs
         train_loss = 0
-        #with self.accelerator.accumulate(self.model):
+        # with self.accelerator.accumulate(self.model):
         for _ in range(self.gradient_accumulation_steps):
             imgs, input_ids, attn_mask = next(self.dl_iter)
             imgs, input_ids, attn_mask = (
-                    imgs.to(device),
-                    input_ids.to(device),
-                    attn_mask.to(device),
-                )
+                imgs.to(device),
+                input_ids.to(device),
+                attn_mask.to(device),
+            )
             text_embeds = t5_encode_text_from_encoded(
-                    input_ids, attn_mask, self.model.transformer.t5, device
-                )
+                input_ids, attn_mask, self.model.transformer.t5, device
+            )
             loss = self.model(imgs, text_embeds=text_embeds)
             avg_loss = self.accelerator.gather(loss.repeat(self.batch_size)).mean()
             train_loss += avg_loss.item() / self.gradient_accumulation_steps
@@ -179,8 +179,8 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
 
         if exists(self.max_grad_norm):
             self.accelerator.clip_grad_norm_(
-                    self.model.parameters(), self.max_grad_norm
-                )
+                self.model.parameters(), self.max_grad_norm
+            )
         self.lr_scheduler.step()
         self.optim.step()
         self.optim.zero_grad()
@@ -198,9 +198,9 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
                 ema_model.update()
 
             logs = {"loss": train_loss, "lr": self.lr_scheduler.get_last_lr()[0]}
-            #self.print(
-                #f"{steps}: maskgit loss: {logs['loss']} - lr: {self.lr_scheduler.get_last_lr()[0]}"
-            #)
+            # self.print(
+            #    f"{steps}: maskgit loss: {logs['loss']} - lr: {self.lr_scheduler.get_last_lr()[0]}"
+            # )
             self.accelerator.log(logs, steps - 1)
 
             logs['save_results_every'] = ''
@@ -215,9 +215,9 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
                         self.validation_prompts = [""] * self.batch_size
 
                     self.log_validation_images(
-                            self.validation_prompts, steps - 1, cond_image=cond_image
-                        )
-                    #self.print(f"{steps}: saving to {str(self.results_dir)}")
+                        self.validation_prompts, steps - 1, cond_image=cond_image
+                    )
+                    # self.print(f"{steps}: saving to {str(self.results_dir)}")
                     logs['save_results_every'] = f"{steps - 1}: saving to {str(self.results_dir)}"
 
                     self.counter_1 = 0
@@ -229,31 +229,31 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
                     if self.counter_2 == self.save_model_every or steps == self.num_train_steps:
                         state_dict = self.accelerator.unwrap_model(self.model).state_dict()
                         maskgit_save_name = (
-                                "maskgit_superres" if self.model.cond_image_size else "maskgit"
-                            )
+                            "maskgit_superres" if self.model.cond_image_size else "maskgit"
+                        )
                         file_name = (
-                                f"{maskgit_save_name}.{steps - 1}.pt"
-                                if not self.only_save_last_checkpoint
-                                else f"{maskgit_save_name}.pt"
-                            )
+                            f"{maskgit_save_name}.{steps - 1}.pt"
+                            if not self.only_save_last_checkpoint
+                            else f"{maskgit_save_name}.pt"
+                        )
 
                         model_path = str(self.results_dir / file_name)
                         self.accelerator.save(state_dict, model_path)
 
                         if self.args and not self.args.do_not_save_config:
-                                # save config file next to the model file.
-                                conf = OmegaConf.create(vars(self.args))
-                                OmegaConf.save(conf, f"{model_path}.yaml")
+                            # save config file next to the model file.
+                            conf = OmegaConf.create(vars(self.args))
+                            OmegaConf.save(conf, f"{model_path}.yaml")
 
                         if self.use_ema:
                             ema_state_dict = self.accelerator.unwrap_model(
-                                    self.ema_model
-                                    ).state_dict()
+                                self.ema_model
+                                ).state_dict()
                             file_name = (
-                                    f"{maskgit_save_name}.{steps - 1}.ema.pt"
-                                    if not self.only_save_last_checkpoint
-                                    else f"{maskgit_save_name}.ema.pt"
-                                )
+                                f"{maskgit_save_name}.{steps - 1}.ema.pt"
+                                if not self.only_save_last_checkpoint
+                                else f"{maskgit_save_name}.ema.pt"
+                            )
                             model_path = str(self.results_dir / file_name)
                             self.accelerator.save(ema_state_dict, model_path)
 
@@ -262,10 +262,9 @@ class MaskGitTrainer(BaseAcceleratedTrainer):
                                 conf = OmegaConf.create(vars(self.args))
                                 OmegaConf.save(conf, f"{model_path}.yaml")
 
-
-                        #self.print(f"{steps}: saving model to {str(self.results_dir)}")
+                        # self.print(f"{steps}: saving model to {str(self.results_dir)}")
                         logs['save_model_every'] = f"\nStep: {steps - 1} | Saving model to {str(self.results_dir)}"
 
                         self.counter_2 = 0
 
-                return logs
+            return logs
