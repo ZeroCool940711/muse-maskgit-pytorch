@@ -1,29 +1,39 @@
+from os import PathLike
 from pathlib import Path
 from shutil import rmtree
+from typing import Optional, Union
 
-from beartype import beartype
-
+import numpy as np
 import torch
+from accelerate import Accelerator, DistributedDataParallelKwargs, DistributedType
+from beartype import beartype
+from datasets import Dataset
+from lion_pytorch import Lion
 from torch import nn
-from torch.optim import Adam
-from torch.utils.data import random_split
-from PIL import Image
-from accelerate import Accelerator, DistributedType, DistributedDataParallelKwargs
-
-from tqdm import tqdm
-from torch.optim import Adam, AdamW
+from torch.optim import Adam, AdamW, Optimizer
 from torch_optimizer import AdaBound, AdaMod, AccSGD, AdamP, AggMo, DiffGrad, \
      Lamb, NovoGrad, PID, QHAdam, QHM, RAdam, SGDP, SGDW, Shampoo, SWATS, Yogi
 from transformers.optimization import Adafactor
-from lion_pytorch import Lion
-from dadaptation import DAdaptAdaGrad, DAdaptAdam, DAdaptSGD
+from torch.utils.data import DataLoader, random_split
+from PIL import Image
 
-import numpy as np
+try:
+    from accelerate.data_loader import MpDeviceLoaderWrapper
+except ImportError:
+    MpDeviceLoaderWrapper = DataLoader
+    pass
+
+try:
+    from bitsandbytes.optim import Adam8bit, AdamW8bit, Lion8bit
+except ImportError:
+    Adam8bit = AdamW8bit = Lion8bit = None
 
 try:
     import wandb
-except:
-    None
+except ImportError:
+    wandb = None
+
+ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
 
 
 def noop(*args, **kwargs):
@@ -36,10 +46,6 @@ def noop(*args, **kwargs):
 def identity(t, *args, **kwargs):
     return t
 
-def cycle(dl):
-    while True:
-        for data in dl:
-            yield data
 
 def cast_tuple(t):
     return t if isinstance(t, (tuple, list)) else (t,)
@@ -48,6 +54,7 @@ def cast_tuple(t):
 def yes_or_no(question):
     answer = input(f"{question} (y/n) ")
     return answer.lower() in ("yes", "y")
+
 
 def pair(val):
     return val if isinstance(val, tuple) else (val, val)
@@ -58,24 +65,25 @@ def convert_image_to_fn(img_type, image):
         return image.convert(img_type)
     return image
 
+
 # image related helpers fnuctions and dataset
 
-def get_accelerator(**accelerate_kwargs):
-    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
 
-    kwargs_handlers = accelerate_kwargs.get("kwargs_handlers", [])
-    kwargs_handlers.append(ddp_kwargs)
-    accelerate_kwargs.update(kwargs_handlers=kwargs_handlers)
-
-    accelerator = Accelerator(**accelerate_kwargs)
+def get_accelerator(*args, **kwargs):
+    kwargs_handlers = kwargs.get("kwargs_handlers", [])
+    if ddp_kwargs not in kwargs_handlers:
+        kwargs_handlers.append(ddp_kwargs)
+        kwargs.update(kwargs_handlers=kwargs_handlers)
+    accelerator = Accelerator(*args, **kwargs)
     return accelerator
 
-def split_dataset(dataset, valid_frac, accelerator, seed=42):
+
+def split_dataset(dataset: Dataset, valid_frac: float, accelerator: Accelerator, seed: int = 42):
     if valid_frac > 0:
         train_size = int((1 - valid_frac) * len(dataset))
         valid_size = len(dataset) - train_size
         ds, valid_ds = random_split(
-            ds,
+            dataset,
             [train_size, valid_size],
             generator=torch.Generator().manual_seed(seed),
         )
@@ -84,163 +92,176 @@ def split_dataset(dataset, valid_frac, accelerator, seed=42):
         )
     else:
         valid_ds = ds
-        accelerator.print(
-            f"training with shared training and valid dataset of {len(ds)} samples"
-        )
+        accelerator.print(f"training with shared training and valid dataset of {len(ds)} samples")
     return ds, valid_ds
 
 
 # main trainer class
 
-def get_optimizer(use_8bit_adam, optimizer, parameters, lr, weight_decay):
-    if use_8bit_adam:
-        try:
-            import bitsandbytes as bnb
-        except ImportError:  # bitsandbytes raises a broad exception for cuda setup errors
-            raise ImportError("Please install bitsandbytes to use 8-bit optimizers. You can do so by running `pip install "
-                        "bitsandbytes` | Defaulting to non 8-bit equivalent...")
+
+def get_optimizer(
+    use_8bit_adam: bool,
+    optimizer: str,
+    parameters: dict,
+    lr: float,
+    weight_decay: float,
+    optimizer_kwargs: dict = {},
+):
+    if use_8bit_adam is True and Adam8bit is None:
+        print(
+            "Please install bitsandbytes to use 8-bit optimizers. You can do so by running `pip install "
+            "bitsandbytes` | Defaulting to non 8-bit equivalent..."
+        )
+
+    bnb_supported_optims = ["Adam", "AdamW", "Lion"]
+    if use_8bit_adam and optimizer not in bnb_supported_optims:
+        print(f"8bit is not supported by the {optimizer} optimizer, Using standard {optimizer} instead.")
+
     # optimizers
     if optimizer == "Adam":
-        if use_8bit_adam:
-            optim = bnb.optim.Adam8bit(parameters, lr=lr, weight_decay=weight_decay)
-        else:
-            optim = Adam(parameters, lr=lr, weight_decay=weight_decay)
+        return (
+            Adam8bit(parameters, lr=lr, weight_decay=weight_decay, **optimizer_kwargs)
+            if use_8bit_adam and Adam8bit is not None
+            else Adam(parameters, lr=lr, weight_decay=weight_decay, **optimizer_kwargs)
+        )
     elif optimizer == "AdamW":
-        if use_8bit_adam:
-            optim = bnb.optim.AdamW8bit(parameters, lr=lr, weight_decay=weight_decay)
-        else:
-            optim = AdamW(parameters, lr=lr, weight_decay=weight_decay)
-    elif optimizer == "DAdaptAdam":
-        optim = DAdaptAdam(parameters, lr=lr, weight_decay=weight_decay)
-        if use_8bit_adam:
-            print("8bit is not supported by the DAdaptAdam optimiser, Using standard DAdaptAdam instead.")
-    elif optimizer == "DAdaptAdaGrad":
-        optim = DAdaptAdaGrad(parameters, lr=lr, weight_decay=weight_decay)
-        if use_8bit_adam:
-            print("8bit is not supported by the DAdaptAdaGrad optimiser, Using standard DAdaptAdaGrad instead.")
-    elif optimizer == "DAdaptSGD":
-        optim = DAdaptSGD(parameters, lr=lr, weight_decay=weight_decay)
-        if use_8bit_adam:
-            print("8bit is not supported by the DAdaptSGD optimiser, Using standard DAdaptSGD instead.")
-
+        return (
+            AdamW8bit(parameters, lr=lr, weight_decay=weight_decay, **optimizer_kwargs)
+            if use_8bit_adam and AdamW8bit is not None
+            else AdamW(parameters, lr=lr, weight_decay=weight_decay, **optimizer_kwargs)
+        )
     elif optimizer == "Lion":
-        optim = Lion(parameters, lr=lr, weight_decay=weight_decay)
-        if use_8bit_adam:
-            print("8bit is not supported by the Lion optimiser, Using standard Lion instead.")
+        # Reckless reuse of the use_8bit_adam flag
+        return (
+            Lion8bit(parameters, lr=lr, weight_decay=weight_decay, **optimizer_kwargs)
+            if use_8bit_adam and Lion8bit is not None
+            else Lion(parameters, lr=lr, weight_decay=weight_decay, **optimizer_kwargs)
+        )
     elif optimizer == "Adafactor":
-        optim = Adafactor(parameters, lr=lr, weight_decay=weight_decay, relative_step=False)
+        return Adafactor(parameters, lr=lr, weight_decay=weight_decay, relative_step=False, scale_parameter=False,  **optimizer_kwargs)
     elif optimizer == "AccSGD":
-        optim = AccSGD(parameters, lr=lr, weight_decay=weight_decay)
+        return AccSGD(parameters, lr=lr, weight_decay=weight_decay)
     elif optimizer == "AdaBound":
-        optim = AdaBound(parameters, lr=lr, weight_decay=weight_decay)
+        return AdaBound(parameters, lr=lr, weight_decay=weight_decay)
     elif optimizer == "AdaMod":
-        optim = AdaMod(parameters, lr=lr, weight_decay=weight_decay)
+        return AdaMod(parameters, lr=lr, weight_decay=weight_decay)
     elif optimizer == "AdamP":
-        optim = AdamP(parameters, lr=lr, weight_decay=weight_decay)
+        return AdamP(parameters, lr=lr, weight_decay=weight_decay)
     elif optimizer == "AggMo":
-        optim = AggMo(parameters, lr=lr, weight_decay=weight_decay)
+        return AggMo(parameters, lr=lr, weight_decay=weight_decay)
     elif optimizer == "DiffGrad":
-        optim = DiffGrad(parameters, lr=lr, weight_decay=weight_decay)
+        return DiffGrad(parameters, lr=lr, weight_decay=weight_decay)
     elif optimizer == "Lamb":
-        optim = Lamb(parameters, lr=lr, weight_decay=weight_decay)
+        return Lamb(parameters, lr=lr, weight_decay=weight_decay)
     elif optimizer == "NovoGrad":
-        optim = NovoGrad(parameters, lr=lr, weight_decay=weight_decay)
+        return NovoGrad(parameters, lr=lr, weight_decay=weight_decay)
     elif optimizer == "PID":
-        optim = PID(parameters, lr=lr, weight_decay=weight_decay)
+        return PID(parameters, lr=lr, weight_decay=weight_decay)
     elif optimizer == "QHAdam":
-        optim = QHAdam(parameters, lr=lr, weight_decay=weight_decay)
+        return QHAdam(parameters, lr=lr, weight_decay=weight_decay)
     elif optimizer == "QHM":
-        optim = QHM(parameters, lr=lr, weight_decay=weight_decay)
+        return QHM(parameters, lr=lr, weight_decay=weight_decay)
     elif optimizer == "RAdam":
-        optim = RAdam(parameters, lr=lr, weight_decay=weight_decay)
+        return RAdam(parameters, lr=lr, weight_decay=weight_decay)
     elif optimizer == "SGDP":
-        optim = SGDP(parameters, lr=lr, weight_decay=weight_decay)
+        return SGDP(parameters, lr=lr, weight_decay=weight_decay)
     elif optimizer == "SGDW":
-        optim = SGDW(parameters, lr=lr, weight_decay=weight_decay)
+        return SGDW(parameters, lr=lr, weight_decay=weight_decay)
     elif optimizer == "Shampoo":
-        optim = Shampoo(parameters, lr=lr, weight_decay=weight_decay)
+        return Shampoo(parameters, lr=lr, weight_decay=weight_decay)
     elif optimizer == "SWATS":
-        optim = SWATS(parameters, lr=lr, weight_decay=weight_decay)
+        return SWATS(parameters, lr=lr, weight_decay=weight_decay)
     elif optimizer == "Yogi":
-        optim = Yogi(parameters, lr=lr, weight_decay=weight_decay)
+        return Yogi(parameters, lr=lr, weight_decay=weight_decay)
     else:
         raise NotImplementedError(f"{optimizer} optimizer not supported yet.")
-    return optim
+
+
 @beartype
 class BaseAcceleratedTrainer(nn.Module):
     def __init__(
         self,
-        dataloader,
-        valid_dataloader,
-        accelerator,
+        dataloader: Union[DataLoader, MpDeviceLoaderWrapper],
+        valid_dataloader: Union[DataLoader, MpDeviceLoaderWrapper],
+        accelerator: Accelerator,
         *,
-        current_step,
-        num_train_steps,
-        max_grad_norm=None,
-        save_results_every=100,
-        save_model_every=1000,
-        results_dir="./results",
-        logging_dir="./results/logs",
-        apply_grad_penalty_every=4,
+        current_step: int,
+        num_train_steps: int,
+        max_grad_norm: Optional[int] = None,
+        save_results_every: int = 100,
+        save_model_every: int = 1000,
+        results_dir: Union[str, PathLike] = Path.cwd().joinpath("results"),
+        logging_dir: Union[str, PathLike] = Path.cwd().joinpath("results/logs"),
+        apply_grad_penalty_every: int = 4,
         batch_size=1,
-        gradient_accumulation_steps=1,
-        clear_previous_experiments=False,
-        validation_image_scale=1,
-        only_save_last_checkpoint=False,
+        gradient_accumulation_steps: int = 1,
+        clear_previous_experiments: bool = False,
+        validation_image_scale: Union[int, float] = 1.0,
+        only_save_last_checkpoint: bool = False,
         use_profiling=False,
         profile_frequency=1,
         row_limit=10,
-    ):
+        ):
         super().__init__()
-        self.model = None
+        self.model: nn.Module = None
         # instantiate accelerator
         self.batch_size = batch_size
-        self.gradient_accumulation_steps = gradient_accumulation_steps
-        self.accelerator = accelerator
-        self.results_dir = Path(results_dir)
-        if clear_previous_experiments:
-            rmtree(str(self.results_dir))
-        self.results_dir.mkdir(parents=True, exist_ok=True)
-
-        self.logging_dir = Path(logging_dir)
-        self.logging_dir.mkdir(parents=True, exist_ok=True)
+        self.gradient_accumulation_steps: int = gradient_accumulation_steps
+        self.accelerator: Accelerator = accelerator
+        self.logging_dir: Path = Path(logging_dir) if not isinstance(logging_dir, Path) else logging_dir
+        self.results_dir: Path = Path(results_dir) if not isinstance(results_dir, Path) else results_dir
 
         # training params
-        self.only_save_last_checkpoint = only_save_last_checkpoint
-        self.validation_image_scale = validation_image_scale
+        self.only_save_last_checkpoint: bool = only_save_last_checkpoint
+        self.validation_image_scale: Union[int, float] = validation_image_scale
         self.register_buffer("steps", torch.Tensor([current_step]))
-        self.num_train_steps = num_train_steps
-        self.max_grad_norm = max_grad_norm
+        self.num_train_steps: int = num_train_steps
+        self.max_grad_norm: Optional[Union[int, float]] = max_grad_norm
 
         self.dl = dataloader
         self.valid_dl = valid_dataloader
-        self.dl_iter = cycle(self.dl)
-        self.valid_dl_iter = cycle(self.valid_dl)
+        self.dl_iter = iter(self.dl)
+        self.valid_dl_iter = iter(self.valid_dl)
 
-        self.save_model_every = save_model_every
-        self.save_results_every = save_results_every
-
-        self.apply_grad_penalty_every = apply_grad_penalty_every
+        self.save_model_every: int = save_model_every
+        self.save_results_every: int = save_results_every
+        self.apply_grad_penalty_every: int = apply_grad_penalty_every
 
         self.use_profiling = use_profiling
         self.profile_frequency =  profile_frequency
         self.row_limit = row_limit
 
+        # Clear previous experiment data if requested
+        if clear_previous_experiments is True and self.accelerator.is_local_main_process:
+            if self.results_dir.exists():
+                rmtree(self.results_dir, ignore_errors=True)
+        # Make sure logging and results directories exist
+        self.logging_dir.mkdir(parents=True, exist_ok=True)
+        self.results_dir.mkdir(parents=True, exist_ok=True)
+
+        self.optim: Optimizer = None
+
+        self.print = self.accelerator.print
+        self.log = self.accelerator.log
+
     def save(self, path):
-        if not self.is_local_main_process:
+        if not self.accelerator.is_main_process:
             return
 
         pkg = dict(
-            model=self.get_state_dict(self.model),
+            model=self.accelerator.get_state_dict(self.model),
             optim=self.optim.state_dict(),
         )
-        torch.save(pkg, path)
+        self.accelerator.save(pkg, path)
 
-    def load(self, path):
-        path = Path(path)
-        assert path.exists()
-        pkg = torch.load(path)
+    def load(self, path: Union[str, PathLike]):
+        if not isinstance(path, Path):
+            path = Path(path)
 
+        if not path.exists():
+            raise FileNotFoundError(f"Checkpoint file {path} does not exist.")
+
+        pkg = torch.load(path, map_location="cpu")
         model = self.accelerator.unwrap_model(self.model)
         model.load_state_dict(pkg["model"])
 
@@ -265,39 +286,20 @@ class BaseAcceleratedTrainer(nn.Module):
             images_pil = [Image.fromarray(image) for image in images]
             images_pil_resized = [image_pil.resize(output_size) for image_pil in images_pil]
             images = [np.array(image_pil) for image_pil in images_pil_resized]
-
-        for tracker in self.accelerator.trackers:
-            if tracker.name == "tensorboard":
-                np_images = np.stack([np.asarray(img) for img in images])
-                tracker.writer.add_images(
-                    "validation", np_images, step, dataformats="NHWC"
-                )
-            if tracker.name == "wandb":
-                tracker.log(
-                    {
-                        "validation": [
-                            wandb.Image(
-                                image, caption="" if not prompts else prompts[i]
-                            )
-                            for i, image in enumerate(images)
-                        ]
-                    }
-                )
-
-    def print(self, msg):
-        self.accelerator.print(msg)
-
-    def log(self, log_dict):
-        self.accelerator.log(log_dict)
-
-    def prepare(self, *args):
-        return self.accelerator.prepare(*args)
-
-    def get_state_dict(self, model):
-        return self.accelerator.get_state_dict(model)
-
-    def unwrap_model(self, model):
-        return self.accelerator.unwrap_model(model)
+        if self.accelerator.is_main_process:
+            for tracker in self.accelerator.trackers:
+                if tracker.name == "tensorboard":
+                    np_images = np.stack([np.asarray(img) for img in images])
+                    tracker.writer.add_images("validation", np_images, step, dataformats="NHWC")
+                elif tracker.name == "wandb":
+                    tracker.log(
+                        {
+                            "validation": [
+                                wandb.Image(image, caption="" if not prompts else prompts[i])
+                                for i, image in enumerate(images)
+                            ]
+                        }
+                    )
 
     @property
     def device(self):
@@ -305,78 +307,27 @@ class BaseAcceleratedTrainer(nn.Module):
 
     @property
     def is_distributed(self):
-        return not (
-            self.accelerator.distributed_type == DistributedType.NO
-            and self.accelerator.num_processes == 1
+        return (
+            False
+            if self.accelerator.distributed_type == DistributedType.NO and self.accelerator.num_processes == 1
+            else True
         )
 
     @property
-    def is_main(self):
+    def is_main_process(self):
         return self.accelerator.is_main_process
 
     @property
-    def is_local_main(self):
+    def is_local_main_process(self):
         return self.accelerator.is_local_main_process
 
     def train_step(self):
-        raise NotImplementedError(
-            "You are calling train_step on the base trainer with no models"
-        )
+        raise NotImplementedError("You are calling train_step on the base trainer with no models")
 
     def train(self, log_fn=noop):
         self.model.train()
-
-        # create two tqdm objects, one for showing the progress bar
-        # and another one for showing any extra information we want to show on a different line.
-        pbar = tqdm(initial=int(self.steps.item()), total=self.num_train_steps)
-        info_bar = tqdm(total=0, bar_format='{desc}')
-        #profiling_bar = tqdm(total=0, bar_format='{desc}')
-
-
-        # use pytorch built-in profiler to gather information on the training for improving performance later.
-        #with torch.autograd.profiler.profile(use_cuda=True) as prof:
-        if self.use_profiling:
-            prof = torch.autograd.profiler.profile(use_cuda=True)
-            prof.__enter__()
-            counter = 1
-
         while self.steps < self.num_train_steps:
-                with self.accelerator.autocast():
-                    logs = self.train_step()
-                log_fn(logs)
-
-                # update the tqdm progress bar
-                pbar.update(self.batch_size * self.gradient_accumulation_steps)
-
-                # show some extra information on the tqdm progress bar.
-                #pbar.set_postfix_str(f"Step: {int(self.steps.item())}")
-                #print (logs)
-                if logs:
-                    try:
-                        info_bar.set_description_str(f"Loss: {logs['loss']}, lr: {logs['lr']}")
-                        print(logs['save_model_every']) if logs['save_model_every'] else None
-                        print(logs['save_results_every']) if logs['save_model_every'] else None
-                    except KeyError:
-                        info_bar.set_description_str(f"VAE loss: {logs['Train/vae_loss']} - discr loss: {logs['Train/discr_loss']} - lr: {logs['lr']}")
-                        print(logs['save_model_every']) if logs['save_model_every'] else None
-                        print(logs['save_results_every']) if logs['save_model_every'] else None
-
-                    if self.use_profiling:
-                        counter += 1
-                        if counter == self.profile_frequency:
-                            # in order to use export_chrome_trace we need to first stop the profiler
-                            prof.__exit__(None, None, None)
-                            # show the information on the console using loguru as it provides better formating and we can later add colors for easy reading.
-                            from loguru import logger
-                            logger.info(prof.key_averages().table(sort_by='cpu_time_total', row_limit=self.row_limit))
-                            # save the trace.json file with the information we gathered during this training step,
-                            # we can use this trace.json file on the chrome tracing page or other similar tool to view more information.
-                            prof.export_chrome_trace(f'{self.logging_dir}/trace.json')
-                            # then we can restart it to continue reusing the same profiler.
-                            prof = torch.autograd.profiler.profile(use_cuda=True)
-                            prof.__enter__()
-                            counter = 1 # Reset step counter
-
-        # close the progress bar as we no longer need it.
-        pbar.close()
+            with self.accelerator.autocast():
+                logs = self.train_step()
+            log_fn(logs)
         self.print("training complete")

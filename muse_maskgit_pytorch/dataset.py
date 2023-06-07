@@ -5,25 +5,40 @@ from pathlib import Path
 from muse_maskgit_pytorch.t5 import MAX_LENGTH
 import datasets
 from datasets import Image, load_from_disk
+from PIL import Image as pImage
 import random, shutil
 import torch
 from torch.utils.data import Dataset, DataLoader, random_split
 import os, time, sys
 from tqdm import tqdm
+from tqdm_loggable.auto import tqdm
+from transformers import T5Tokenizer
 from threading import Thread
 import PIL
+
+from muse_maskgit_pytorch.t5 import MAX_LENGTH
+import requests
+from io import BytesIO
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 PIL.Image.MAX_IMAGE_PIXELS = None
 
-
 class ImageDataset(Dataset):
     def __init__(
-        self, dataset, image_size, image_column="image", flip=True, center_crop=True, using_taming=False, random_crop=False,
+        self,
+        dataset,
+        image_size,
+        image_column="image",
+        flip=True,
+        center_crop=True,
+        stream=False,
+        using_taming=False,
+        random_crop=False,
     ):
         super().__init__()
         self.dataset = dataset
         self.image_column = image_column
+        self.stream = stream
         transform_list = [
             T.Lambda(lambda img: img.convert("RGB") if img.mode != "RGB" else img),
             T.Resize(image_size),
@@ -36,16 +51,18 @@ class ImageDataset(Dataset):
             transform_list.append(T.RandomCrop(image_size, pad_if_needed=True))
         transform_list.append(T.ToTensor())
         self.transform = T.Compose(transform_list)
-
         self.using_taming = using_taming
 
     def __len__(self):
-        return len(self.dataset)
+        if not self.stream:
+            return len(self.dataset)
+        else:
+            raise AssertionError("Streaming doesnt support grabbing dataset length")
 
     def __getitem__(self, index):
         image = self.dataset[index][self.image_column]
         if self.using_taming:
-            return self.transform(image)-0.5
+            return self.transform(image) - 0.5
         else:
             return self.transform(image)
 
@@ -53,12 +70,13 @@ class ImageTextDataset(ImageDataset):
     def __init__(
         self,
         dataset,
-        image_size,
-        tokenizer,
+        image_size: int,
+        tokenizer: T5Tokenizer,
         image_column="image",
-        caption_column=None,
+        caption_column="caption",
         flip=True,
         center_crop=True,
+        stream=False,
         using_taming=False,
         random_crop=False,
     ):
@@ -68,16 +86,79 @@ class ImageTextDataset(ImageDataset):
             image_column=image_column,
             flip=flip,
             center_crop=center_crop,
+            stream=stream,
             using_taming=using_taming,
             random_crop=random_crop,
         )
-        self.caption_column = caption_column
-        self.tokenizer = tokenizer
+        self.caption_column: str = caption_column
+        self.tokenizer: T5Tokenizer = tokenizer
 
     def __getitem__(self, index):
         image = self.dataset[index][self.image_column]
         descriptions = self.dataset[index][self.caption_column]
-        if self.caption_column == None or descriptions == None:
+        if self.caption_column is None or descriptions is None:
+            text = ""
+        elif isinstance(descriptions, list):
+            if len(descriptions) == 0:
+                text = ""
+            else:
+                text = random.choice(descriptions)
+        else:
+            text = descriptions
+        # max length from the paper
+        encoded = self.tokenizer.batch_encode_plus(
+                [str(text)],
+                return_tensors="pt",
+                padding="max_length",
+                max_length=MAX_LENGTH,
+                truncation=True,
+            )
+
+        input_ids = encoded.input_ids
+        attn_mask = encoded.attention_mask
+
+        if self.using_taming:
+            return self.transform(image) - 0.5, input_ids[0], attn_mask[0]
+        else:
+            return self.transform(image), input_ids[0], attn_mask[0]
+
+class URLTextDataset(ImageDataset):
+    def __init__(
+        self,
+        dataset,
+        image_size: int,
+        tokenizer: T5Tokenizer,
+        image_column="image",
+        caption_column="caption",
+        flip=True,
+        center_crop=True,
+        using_taming=True
+    ):
+        super().__init__(
+            dataset,
+            image_size=image_size,
+            image_column=image_column,
+            flip=flip,
+            center_crop=center_crop,
+            using_taming=using_taming
+        )
+        self.caption_column: str = caption_column
+        self.tokenizer: T5Tokenizer = tokenizer
+
+    def __getitem__(self, index):
+        try:
+            image = pImage.open(BytesIO(requests.get(self.dataset[index][self.image_column]).content))
+        except ConnectionError:
+            try:
+                print("Image request failure, attempting next image")
+                index += 1
+
+                image = pImage.open(BytesIO(requests.get(self.dataset[index][self.image_column]).content))
+            except ConnectionError:
+                raise ConnectionError("Unable to request image from the Dataset")
+
+        descriptions = self.dataset[index][self.caption_column]
+        if self.caption_column is None or descriptions is None:
             text = ""
         elif isinstance(descriptions, list):
             if len(descriptions) == 0:
@@ -97,7 +178,78 @@ class ImageTextDataset(ImageDataset):
 
         input_ids = encoded.input_ids
         attn_mask = encoded.attention_mask
-        return self.transform(image), input_ids[0], attn_mask[0]
+        if self.using_taming:
+            return self.transform(image) - 0.5, input_ids[0], attn_mask[0]
+        else:
+            return self.transform(image), input_ids[0], attn_mask[0]
+
+class LocalTextImageDataset(Dataset):
+    def __init__(self, path, image_size, tokenizer, flip=True, center_crop=True, using_taming=False):
+        super().__init__()
+        self.tokenizer = tokenizer
+        self.using_taming = using_taming
+
+        print("Building dataset...")
+
+        extensions = ["jpg", "jpeg", "png", "webp"]
+        self.image_paths = []
+        self.caption_pair = []
+        self.images = []
+
+        for ext in extensions:
+            self.image_paths.extend(list(Path(path).rglob(f"*.{ext}")))
+
+        random.shuffle(self.image_paths)
+        for image_path in tqdm(self.image_paths):
+            # check image size and ignore images with 0 byte.
+            if os.path.getsize(image_path) == 0:
+                continue
+            caption_path = image_path.with_suffix(".txt")
+            if os.path.exists(str(caption_path)):
+                captions = str(caption_path)
+            else:
+                captions = ""
+            self.images.append(image_path)
+            self.caption_pair.append(captions)
+
+        transform_list = [
+            T.Lambda(lambda img: img.convert("RGB") if img.mode != "RGB" else img),
+            T.Resize(image_size),
+        ]
+        if flip:
+            transform_list.append(T.RandomHorizontalFlip())
+        if center_crop:
+            transform_list.append(T.CenterCrop(image_size))
+        transform_list.append(T.ToTensor())
+        self.transform = T.Compose(transform_list)
+
+    def __len__(self):
+        return len(self.caption_pair)
+
+    def __getitem__(self, index):
+        image = self.images[index]
+        image = pImage.open(image)
+        descriptions = self.caption_pair[index]
+        if descriptions is None or descriptions == "":
+            text = ""
+        else:
+            text = Path(descriptions).read_text(encoding="utf-8").split("\n")
+
+        # max length from the paper
+        encoded = self.tokenizer.batch_encode_plus(
+            [str(text)],
+            return_tensors="pt",
+            padding="max_length",
+            max_length=MAX_LENGTH,
+            truncation=True,
+        )
+
+        input_ids = encoded.input_ids
+        attn_mask = encoded.attention_mask
+        if self.using_taming:
+            return self.transform(image) - 0.5, input_ids[0], attn_mask[0]
+        else:
+            return self.transform(image), input_ids[0], attn_mask[0]
 
 
 def get_directory_size(path):
@@ -123,15 +275,13 @@ def save_dataset_with_progress(dataset, save_path):
             if os.path.exists(save_path):
                 size = get_directory_size(save_path)
                 # Update the progress bar based on the current size of the saved file
-                pbar.update(
-                    size - pbar.n
-                )  # Update by the difference between current and previous size
+                pbar.update(size - pbar.n)  # Update by the difference between current and previous size
             time.sleep(1)
 
 
 def get_dataset_from_dataroot(
-    data_root, image_column="image", caption_column="caption", save_path="dataset", no_cache=False,
-):
+    data_root, image_column="image", caption_column="caption", save_path="dataset", no_cache=False
+    ):
     # Check if data_root is a symlink and resolve it to its target location if it is
     if os.path.islink(data_root):
         data_root = os.path.realpath(data_root)
@@ -207,6 +357,8 @@ def split_dataset_into_dataloaders(dataset, valid_frac=0.05, seed=42, batch_size
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
     validation_dataloader = DataLoader(
-        validation_dataset, batch_size=batch_size, shuffle=True
+        validation_dataset,
+        batch_size=batch_size,
+        shuffle=True,
     )
     return dataloader, validation_dataloader

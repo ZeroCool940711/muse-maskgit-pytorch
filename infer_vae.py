@@ -53,9 +53,7 @@ def parse_args():
         default=42,
         help="Seed for reproducibility. If set to -1 a random seed will be generated.",
     )
-    parser.add_argument(
-        "--valid_frac", type=float, default=0.05, help="validation fraction."
-    )
+    parser.add_argument("--valid_frac", type=float, default=0.05, help="validation fraction.")
     parser.add_argument(
         "--image_column",
         type=str,
@@ -212,7 +210,7 @@ def main():
     args = parse_args()
     accelerator = get_accelerator(
         mixed_precision=args.mixed_precision,
-        logging_dir=args.logging_dir,
+        project_dir=args.logging_dir,
     )
 
     # set pytorch seed for reproducibility
