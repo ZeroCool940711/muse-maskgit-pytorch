@@ -174,6 +174,12 @@ def parse_args():
         help="GPU to use in case we want to use a specific GPU for inference.",
     )
     parser.add_argument(
+        "--max_retries",
+        type=int,
+        default=30,
+        help="Max number of times to retry in case the reconstruction fails due to OOM or any other error.",
+    )
+    parser.add_argument(
         "--latest_checkpoint",
         action="store_true",
         help="Use the latest checkpoint using the vae_path folder instead of using just a specific vae_path.",
@@ -346,8 +352,6 @@ def main():
         output_dir = os.path.join(args.results_dir, "outputs", os.path.basename(args.input_folder))
         os.makedirs(output_dir, exist_ok=True)
 
-        max_retries = 30
-
         for i in tqdm(range(len(dataset))):
             retries = 0
             while True:
@@ -388,7 +392,7 @@ def main():
                     break  # Exit the retry loop if there were no errors
 
                 except RuntimeError as e:
-                    if "out of memory" in str(e) and retries < max_retries:
+                    if "out of memory" in str(e) and retries < args.max_retries:
                         retries += 1
                         #print(f"Out of Memory. Retry #{retries}")
                         torch.cuda.empty_cache()
